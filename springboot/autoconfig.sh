@@ -507,7 +507,7 @@ server {
   add_header X-Release "${TS}" always;
 
   # Rate limit (leaky bucket)
-  limit_req zone=reqs burst=${BURST} nodelay;
+  limit_req zone=${APP_NAME}_reqs burst=${BURST} nodelay;
 
   gzip on;
   gzip_types text/plain text/css application/json application/javascript application/xml application/xhtml+xml image/svg+xml;
@@ -550,10 +550,17 @@ ${ALLOW_LINES}    deny all;
 NGX
 
   # Ensure global rate limit zone exists (respect RATE)
-  # IMPORTANT: escape $binary_remote_addr so Bash doesn't expand it; it's an Nginx var.
-  if ! sudo grep -q 'limit_req_zone' "$NGX_CONF"; then
-    sudo sed -i "1i limit_req_zone \$binary_remote_addr zone=reqs:10m rate=${RATE};" "$NGX_CONF"
-  fi
+  # Ensure a per-app rate-limit zone exists inside the http{} context.
+  # 1) Clean up any stray top-level insert from previous runs
+  sudo sed -i '/^\s*limit_req_zone\s\+/d' "$NGX_CONF" || true
+  
+  # 2) Define the zone in conf.d (included from http{} on Debian/Ubuntu)
+  #    Docs: limit_req_zone is http-only; $binary_remote_addr recommended. :contentReference[oaicite:1]{index=1}
+  sudo tee "/etc/nginx/conf.d/${APP_NAME}-ratelimit.conf" >/dev/null <<EOF
+  limit_req_zone \$binary_remote_addr zone=${APP_NAME}_reqs:10m rate=${RATE};
+  EOF
+ 
+
 
 
   # Validate and reload Nginx; restore on failure
@@ -601,7 +608,13 @@ fi
 JAVA_VER="$(java -version 2>&1 | tr '\n' ' ' | sed 's/"/\\"/g')"
 NGX_VER="$(nginx -v 2>&1 | sed 's|nginx version: ||' || true)"
 APP_JAR_SHA256="$(sha256sum "$CURRENT_DIR_LINK/app.jar" | awk '{print $1}')"
-NGX_SITE_SHA256="$(sha256sum "$NGX_SITE" 2>/dev/null | awk '{print $1}')"
+# NGX_SITE_SHA256="$(sha256sum "$NGX_SITE" 2>/dev/null | awk '{print $1}')"
+if [ -f "$NGX_SITE" ]; then
+  NGX_SITE_SHA256="$(sha256sum "$NGX_SITE" | awk '{print $1}')"
+else
+  NGX_SITE_SHA256="absent"
+fi
+
 SVC_SHA256="$(sha256sum "$SVC_TEMPLATE" | awk '{print $1}')"
 sudo bash -c "cat > '$AUDIT_FILE'" <<JSON
 {
