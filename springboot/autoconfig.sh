@@ -558,7 +558,7 @@ NGX
   #    Docs: limit_req_zone is http-only; $binary_remote_addr recommended. :contentReference[oaicite:1]{index=1}
   sudo tee "/etc/nginx/conf.d/${APP_NAME}-ratelimit.conf" >/dev/null <<EOF
   limit_req_zone \$binary_remote_addr zone=${APP_NAME}_reqs:10m rate=${RATE};
-  EOF
+EOF
  
 
 

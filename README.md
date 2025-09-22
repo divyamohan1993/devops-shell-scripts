@@ -59,18 +59,6 @@ Each section follows a simple loop so you can learn fast and safely:
 - **IaC:** Terraform or **OpenTofu**  
 - **Security tooling (optional to start):** ShellCheck, Gitleaks, Trivy, Semgrep, Syft/CycloneDX, cosign
 
-## Repository Structure
-
-```
-
-scripts/          # Bash utilities, installers, helpers
-k8s/              # Manifests, Helm/Kustomize, kind/minikube assets
-ci/               # Reusable CI snippets (ShellCheck/Gitleaks/Trivy/etc.)
-iac/              # Terraform/OpenTofu samples
-security/         # Semgrep, Trivy/Grype, Syft/CycloneDX, cosign
-observability/    # Prometheus rules, Grafana dashboards, logging agents
-
-````
 
 ## How to Use This Repository
 
