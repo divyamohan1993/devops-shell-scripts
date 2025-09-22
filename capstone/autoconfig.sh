@@ -1,21 +1,19 @@
 #!/usr/bin/env bash
-# Idempotent tri-service app installer/manager for:
-#   - Next.js (frontend, public on :12000)
-#   - Flask (backend, internal only)
-#   - Postgres (db, internal only)
-# Includes a watcher that coordinates group stop/restart behavior.
+# Idempotent tri-service app installer/manager:
+#   - Next.js (frontend) :12000 public
+#   - Flask (backend)    internal-only
+#   - Postgres (db)      internal-only
+# Includes a watcher to coordinate group stop/restart behavior.
 
 set -Eeuo pipefail
 
-require_root() {
-  if [[ $EUID -ne 0 ]]; then
-    echo "Please run with sudo or as root." >&2
-    exit 1
-  fi
-}
+require_root() { if [[ $EUID -ne 0 ]]; then echo "Please run with sudo or as root." >&2; exit 1; fi; }
+log()  { printf "[*] %s\n" "$*"; }
+warn() { printf "[!] %s\n" "$*" >&2; }
+die()  { printf "[x] %s\n" "$*" >&2; exit 1; }
 
-# --------------- Config (constants) ---------------
-APP_ROOT="/opt/triapp"           # Keep a stable path independent of APP_NAME
+# ---------- Constants ----------
+APP_ROOT="/opt/triapp"
 ENV_FILE="${APP_ROOT}/.env"
 COMPOSE_FILE="${APP_ROOT}/docker-compose.yml"
 WATCHER_SCRIPT="${APP_ROOT}/scripts/compose-watcher.sh"
@@ -23,23 +21,15 @@ WATCHER_UNIT="/etc/systemd/system/triapp-watcher.service"
 DEFAULT_APP_NAME="triapp"
 DEFAULT_FRONTEND_PORT="12000"
 
-# --------------- Utilities ---------------
-log() { printf "[*] %s\n" "$*"; }
-warn() { printf "[!] %s\n" "$*" >&2; }
-die() { printf "[x] %s\n" "$*" >&2; exit 1; }
-
+# ---------- Helpers ----------
 rand_b64() { openssl rand -base64 48 | tr -d '\n'; }
-rand_hex() { openssl rand -hex 32 | tr -d '\n'; }
-
+rand_hex() { openssl rand -hex 32   | tr -d '\n'; }
 os_id() { . /etc/os-release 2>/dev/null || true; echo "${ID:-unknown}"; }
 
 choose_compose_cmd() {
-  if docker compose version >/dev/null 2>&1; then
-    echo "docker compose"
-  elif docker-compose version >/dev/null 2>&1; then
-    echo "docker-compose"
-  else
-    echo ""  # will trigger install in ensure_prereqs
+  if docker compose version >/dev/null 2>&1; then echo "docker compose"
+  elif docker-compose version >/dev/null 2>&1; then echo "docker-compose"
+  else echo ""
   fi
 }
 
@@ -64,15 +54,12 @@ ensure_prereqs() {
         yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo || true
         yum install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin jq
         ;;
-      *)
-        die "Unsupported OS '$os'. Install Docker, Compose, and jq manually, then rerun."
-        ;;
+      *) die "Unsupported OS '$os'. Install Docker, Compose, and jq manually, then rerun." ;;
     esac
     systemctl enable --now docker
   else
     log "Docker present."
     systemctl enable --now docker || true
-    # jq might still be missing
     if ! command -v jq >/dev/null 2>&1; then
       case "$os" in
         ubuntu|debian) apt-get update -y && apt-get install -y jq ;;
@@ -83,18 +70,13 @@ ensure_prereqs() {
 
   COMPOSE_BIN="$(choose_compose_cmd)"
   if [[ -z "$COMPOSE_BIN" ]]; then
-    # Docker compose plugin should be installed above; re-check
-    if docker compose version >/dev/null 2>&1; then
-      COMPOSE_BIN="docker compose"
-    elif docker-compose version >/dev/null 2>&1; then
-      COMPOSE_BIN="docker-compose"
-    else
-      die "No docker compose found even after install."
+    if docker compose version >/dev/null 2>&1; then COMPOSE_BIN="docker compose"
+    elif docker-compose version >/dev/null 2>&1; then COMPOSE_BIN="docker-compose"
+    else die "No docker compose found even after install."
     fi
   fi
 }
 
-# Parse existing .env into an associative array (safe-ish: only KEY=VALUE lines)
 declare -A ENVV
 load_env_file() {
   ENVV=()
@@ -102,23 +84,18 @@ load_env_file() {
     while IFS= read -r line; do
       [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
       [[ "$line" != *"="* ]] && continue
-      local key="${line%%=*}"
-      local val="${line#*=}"
-      # Trim possible CR
-      val="${val%$'\r'}"
+      local key="${line%%=*}"; local val="${line#*=}"; val="${val%$'\r'}"
       ENVV["$key"]="$val"
     done < "$ENV_FILE"
   fi
 }
 
-# Get value from ENVV or default
 getv() { local k="$1" d="$2"; echo "${ENVV[$k]:-$d}"; }
 
 write_env_file() {
   mkdir -p "$APP_ROOT"
   load_env_file
 
-  # Defaults (respect existing if present)
   local APP_NAME FRONTEND_PORT POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD
   local FLASK_SECRET SESSION_COOKIE_NAME COOKIE_SECURE CSRF_SECRET RATE_LIMIT
   local NEXT_PUBLIC_APP_NAME NEXT_TELEMETRY_DISABLED API_INTERNAL_BASE
@@ -132,7 +109,7 @@ write_env_file() {
 
   FLASK_SECRET="$(getv FLASK_SECRET "$(rand_b64)")"
   SESSION_COOKIE_NAME="$(getv SESSION_COOKIE_NAME "triapp_session")"
-  COOKIE_SECURE="$(getv COOKIE_SECURE "false")"  # set true when TLS is fronted
+  COOKIE_SECURE="$(getv COOKIE_SECURE "false")"
   CSRF_SECRET="$(getv CSRF_SECRET "$(rand_hex)")"
   RATE_LIMIT="$(getv RATE_LIMIT "200/hour")"
 
@@ -140,10 +117,9 @@ write_env_file() {
   NEXT_TELEMETRY_DISABLED="$(getv NEXT_TELEMETRY_DISABLED "1")"
   API_INTERNAL_BASE="$(getv API_INTERNAL_BASE "http://backend:5000")"
 
-  # Persist
   cat > "$ENV_FILE" <<EOF
 # ====== TriApp environment (.env) ======
-# You may edit values here and rerun autoconfig.sh; changes will be applied.
+# Edit as needed and rerun autoconfig.sh; changes will be applied.
 APP_NAME=${APP_NAME}
 FRONTEND_PORT=${FRONTEND_PORT}
 
@@ -169,8 +145,7 @@ EOF
 }
 
 write_compose_file() {
-  # Use constant volume name 'triapp_db' to avoid surprises across APP_NAME changes
-  # Only frontend is bound to host port; backend and db are internal-only.
+  # Constant volume name 'triapp_db' (project-scoped as ${APP_NAME}_triapp_db)
   cat > "$COMPOSE_FILE" <<'YML'
 name: ${APP_NAME}
 services:
@@ -247,10 +222,11 @@ services:
       - ./db/init.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB} -h 127.0.0.1"]
+      # Keep it credential-agnostic; only checks server readiness
+      test: ["CMD-SHELL", "pg_isready -q -h 127.0.0.1 -p 5432 || exit 1"]
       interval: 10s
       timeout: 5s
-      retries: 20
+      retries: 30
     security_opt:
       - no-new-privileges:true
     cap_drop: ["ALL"]
@@ -261,11 +237,11 @@ services:
       - "5432"
 
 networks:
-  web_net: {}
+  web_net: {}            # public-facing for frontend
   app_net:
-    internal: true
+    internal: true       # frontend <-> backend only
   db_net:
-    internal: true
+    internal: true       # backend  <-> db only
 
 volumes:
   triapp_db:
@@ -278,16 +254,8 @@ write_frontend() {
 {
   "name": "triapp-frontend",
   "private": true,
-  "scripts": {
-    "build": "next build",
-    "start": "next start -p 3000",
-    "dev": "next dev -p 3000"
-  },
-  "dependencies": {
-    "next": "14.2.5",
-    "react": "18.2.0",
-    "react-dom": "18.2.0"
-  }
+  "scripts": { "build": "next build", "start": "next start -p 3000", "dev": "next dev -p 3000" },
+  "dependencies": { "next": "14.2.5", "react": "18.2.0", "react-dom": "18.2.0" }
 }
 PKG
 
@@ -302,12 +270,9 @@ const securityHeaders = [
   { key: 'Cross-Origin-Resource-Policy', value: 'same-origin' },
   { key: 'Content-Security-Policy', value: "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none';" }
 ];
-
 const nextConfig = {
   async headers() { return [{ source: '/(.*)', headers: securityHeaders }]; },
-  async rewrites() {
-    return [{ source: '/api/:path*', destination: 'http://backend:5000/api/:path*' }];
-  }
+  async rewrites() { return [{ source: '/api/:path*', destination: 'http://backend:5000/api/:path*' }]; }
 };
 module.exports = nextConfig;
 NCFG
@@ -546,17 +511,14 @@ def init_db():
         """)
         conn.commit()
 
-@app.route("/healthz")
-def healthz():
-    return "ok", 200
+@app.route("/healthz") 
+def healthz(): return "ok", 200
 
 def get_client_ip():
     fwd = request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
     ip = fwd or request.remote_addr or "0.0.0.0"
-    try:
-        ip_address(ip)
-    except Exception:
-        ip = "0.0.0.0"
+    try: ip_address(ip)
+    except Exception: ip = "0.0.0.0"
     return ip
 
 def set_session(user_id: int):
@@ -585,10 +547,8 @@ def clear_session():
 def current_user():
     sid = request.cookies.get(SESSION_COOKIE_NAME)
     if not sid: return None
-    try:
-        signer.loads(sid, max_age=60*60*24*2)
-    except BadSignature:
-        return None
+    try: signer.loads(sid, max_age=60*60*24*2)
+    except BadSignature: return None
     with db() as conn, conn.cursor() as cur:
         cur.execute("""SELECT u.id, u.email, u.totp_secret,
                               (SELECT count(*) FROM sessions s2 WHERE s2.user_id = u.id) AS active_sessions
@@ -602,14 +562,12 @@ def current_user():
 def require_csrf():
     token = request.headers.get("X-CSRF-Token","")
     csrf_cookie = request.cookies.get("csrf","")
-    try:
-        csrf_signer.loads(csrf_cookie, max_age=12*3600)
-    except BadSignature:
-        abort(403)
-    if token != "browser":
-        abort(403)
+    try: csrf_signer.loads(csrf_cookie, max_age=12*3600)
+    except BadSignature: abort(403)
+    if token != "browser": abort(403)
     return True
 
+from flask import abort
 @app.post("/api/auth/signup")
 @limiter.limit("20/hour")
 def signup():
@@ -619,13 +577,13 @@ def signup():
     pw = j.get("password") or ""
     if not email or not pw: return jsonify({"error":"email/password required"}), 400
     try:
+        from argon2 import PasswordHasher; ph = PasswordHasher()
         pwhash = ph.hash(pw)
         secret = pyotp.random_base32()
         with db() as conn, conn.cursor() as cur:
             cur.execute("INSERT INTO users(email, passhash, totp_secret) VALUES(%s,%s,%s) RETURNING id", (email, pwhash, secret))
             uid = cur.fetchone()["id"]; conn.commit()
-        totp = pyotp.TOTP(secret)
-        uri = totp.provisioning_uri(name=email, issuer_name="TriApp")
+        uri = pyotp.TOTP(secret).provisioning_uri(name=email, issuer_name="TriApp")
         img = qrcode.make(uri); buf = BytesIO(); img.save(buf, format="PNG")
         qr_b64 = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
         with db() as conn, conn.cursor() as cur:
@@ -648,7 +606,7 @@ def login():
     with db() as conn, conn.cursor() as cur:
         cur.execute("SELECT id, passhash, totp_secret FROM users WHERE email=%s", (email,))
         u = cur.fetchone()
-    if not u: 
+    if not u:
         with db() as conn, conn.cursor() as cur:
             cur.execute("INSERT INTO login_events(user_email, ip, ok) VALUES(%s,%s,%s)", (email, get_client_ip(), False)); conn.commit()
         return jsonify({"error":"invalid credentials"}), 401
@@ -670,8 +628,7 @@ def login():
     return set_session(u["id"])
 
 @app.get("/api/auth/logout")
-def logout():
-    return clear_session()
+def logout(): return clear_session()
 
 @app.get("/api/me")
 def me():
@@ -689,8 +646,7 @@ def login_events():
 
 @app.get("/api/pg-info")
 def pg_info():
-    u = current_user()
-    if not u: return jsonify({}), 401
+    u = current_user(); if not u: return jsonify({}), 401
     with db() as conn, conn.cursor() as cur:
         cur.execute("SELECT version(), now()"); r = cur.fetchone()
         return jsonify({"version": r["version"], "now": str(r["now"])})
@@ -734,33 +690,13 @@ write_watcher() {
   cat > "$WATCHER_SCRIPT" <<'WATCH'
 #!/usr/bin/env bash
 set -Eeuo pipefail
-
-APP_DIR="/opt/triapp"
-cd "$APP_DIR"
-
-# Read APP_NAME from .env (fallback to 'triapp')
-APP_NAME="$(grep -E '^APP_NAME=' .env 2>/dev/null | cut -d= -f2- || true)"
-APP_NAME="${APP_NAME:-triapp}"
-
-choose_compose() {
-  if docker compose version >/dev/null 2>&1; then echo "docker compose"
-  elif docker-compose version >/dev/null 2>&1; then echo "docker-compose"
-  else echo "docker compose"; fi
-}
+APP_DIR="/opt/triapp"; cd "$APP_DIR"
+APP_NAME="$(grep -E '^APP_NAME=' .env 2>/dev/null | cut -d= -f2- || true)"; APP_NAME="${APP_NAME:-triapp}"
+choose_compose(){ if docker compose version >/dev/null 2>&1; then echo "docker compose"; elif docker-compose version >/dev/null 2>&1; then echo "docker-compose"; else echo "docker compose"; fi; }
 COMPOSE_BIN="$(choose_compose)"
-
-MAIN_SERVICE="frontend"
-IGNORE_AUX_STOP_UNTIL=0
-MAIN_RESTART_WINDOW_UNTIL=0
-
-now() { date +%s; }
-
-log(){ printf "[watcher] %s\n" "$*"; }
-
-# Ensure stack is up (no-op if already up)
+MAIN_SERVICE="frontend"; IGNORE_AUX_STOP_UNTIL=0; MAIN_RESTART_WINDOW_UNTIL=0
+now(){ date +%s; } log(){ printf "[watcher] %s\n" "$*"; }
 $COMPOSE_BIN -f "$APP_DIR/docker-compose.yml" up -d >/dev/null 2>&1 || true
-
-# Listen only to our compose project
 docker events --format '{{json .}}' \
   --filter type=container \
   --filter "label=com.docker.compose.project=${APP_NAME}" \
@@ -769,31 +705,20 @@ docker events --format '{{json .}}' \
     status="$(echo "$line" | jq -r '.status // empty')"
     svc="$(echo "$line"   | jq -r '.Actor.Attributes["com.docker.compose.service"] // empty')"
     [[ -z "$svc" || -z "$status" ]] && continue
-
     tnow="$(now)"
-
-    # If we just restarted aux ourselves, ignore their stop events briefly
     if [[ "$svc" != "$MAIN_SERVICE" && "$status" == "stop" && $tnow -lt $IGNORE_AUX_STOP_UNTIL ]]; then
-      log "ignoring stop on $svc (aux restart in progress)"
-      continue
+      log "ignoring stop on $svc (aux restart in progress)"; continue
     fi
-
     if [[ "$svc" == "$MAIN_SERVICE" && "$status" == "restart" ]]; then
-      MAIN_RESTART_WINDOW_UNTIL=$((tnow + 20))
-      log "main restart detected; will restart aux after main starts"
-      continue
+      MAIN_RESTART_WINDOW_UNTIL=$((tnow + 20)); log "main restart detected; will restart aux after main starts"; continue
     fi
-
     if [[ "$svc" == "$MAIN_SERVICE" && "$status" == "start" && $tnow -lt $MAIN_RESTART_WINDOW_UNTIL ]]; then
       log "main started after restart; restarting backend & db"
       IGNORE_AUX_STOP_UNTIL=$((tnow + 20))
       $COMPOSE_BIN -f "$APP_DIR/docker-compose.yml" restart backend db || true
-      MAIN_RESTART_WINDOW_UNTIL=0
-      continue
+      MAIN_RESTART_WINDOW_UNTIL=0; continue
     fi
-
     if [[ "$status" == "stop" ]]; then
-      # Any manual stop of any service stops the entire stack
       log "container '$svc' stopped -> stopping entire stack"
       $COMPOSE_BIN -f "$APP_DIR/docker-compose.yml" stop || true
       continue
@@ -823,30 +748,64 @@ UNIT
   systemctl enable --now triapp-watcher.service
 }
 
+wait_for_health() {
+  # wait_for_health <service> <timeout_sec>
+  local service="$1" timeout="${2:-180}" elapsed=0 status cid
+  # Find container by labels (project + service)
+  local project; project="$(grep -E '^APP_NAME=' "$ENV_FILE" | cut -d= -f2-)"
+  while (( elapsed < timeout )); do
+    cid="$(docker ps -a --filter "label=com.docker.compose.project=${project}" \
+                     --filter "label=com.docker.compose.service=${service}" \
+                     --format '{{.ID}}' | head -n 1)"
+    if [[ -n "$cid" ]]; then
+      status="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$cid" 2>/dev/null || true)"
+      if [[ "$status" == "healthy" || "$status" == "running" ]]; then return 0; fi
+      if [[ "$status" == "exited" || "$status" == "dead" ]]; then return 1; fi
+    fi
+    sleep 3; elapsed=$((elapsed+3))
+  done
+  return 1
+}
+
 compose_up() {
   ( cd "$APP_ROOT" && $COMPOSE_BIN pull || true )
-  ( cd "$APP_ROOT" && $COMPOSE_BIN up -d --build )
+  ( cd "$APP_ROOT" && $COMPOSE_BIN up -d --build || true )
+
+  # Wait for DB to be healthy, then try starting dependents again
+  log "Waiting for database to become healthy..."
+  if wait_for_health "db" 180; then
+    log "DB healthy. Ensuring all services are up..."
+    ( cd "$APP_ROOT" && $COMPOSE_BIN up -d || true )
+  else
+    warn "DB did not become healthy in time. Showing last 100 lines of DB logs:"
+    ( cd "$APP_ROOT" && $COMPOSE_BIN logs --tail=100 db || true )
+    die "Database unhealthy. Fix logs above, then rerun: sudo bash autoconfig.sh up"
+  fi
+
+  # Optionally allow 12000 via UFW if active (does not touch SSH/22)
+  if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+    ufw allow 12000/tcp >/dev/null 2>&1 || true
+  fi
 }
 
 compose_stop() {
   if [[ -f "$COMPOSE_FILE" ]]; then
     ( cd "$APP_ROOT" && $COMPOSE_BIN stop || true )
   else
-    warn "No compose file found at $COMPOSE_FILE; nothing to stop."
+    warn "No compose file at $COMPOSE_FILE; nothing to stop."
   fi
 }
 
 compose_destroy() {
   systemctl disable --now triapp-watcher.service >/dev/null 2>&1 || true
   rm -f "$WATCHER_UNIT"; systemctl daemon-reload || true
-
   if [[ -f "$COMPOSE_FILE" ]]; then
     ( cd "$APP_ROOT" && $COMPOSE_BIN down -v --remove-orphans || true )
   fi
-
-  # Remove named volume explicitly (idempotent)
-  docker volume rm -f triapp_db >/dev/null 2>&1 || true
-
+  docker volume rm -f "${DEFAULT_APP_NAME}_triapp_db" >/dev/null 2>&1 || true
+  # Also remove project-prefixed volume if APP_NAME changed
+  local appn; appn="$(grep -E '^APP_NAME=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || echo "$DEFAULT_APP_NAME")"
+  docker volume rm -f "${appn}_triapp_db" >/dev/null 2>&1 || true
   rm -rf "$APP_ROOT"
   log "Destroyed all services, data, and watcher."
 }
@@ -872,9 +831,9 @@ main_up() {
   compose_up
   write_watcher
 
-  # Output access info
-  local port; port="$(grep -E '^FRONTEND_PORT=' "$ENV_FILE" | cut -d= -f2-)"
-  local ip; ip="$(curl -fsS ifconfig.me 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}' || echo '<YOUR_VM_IP>')"
+  local port ip
+  port="$(grep -E '^FRONTEND_PORT=' "$ENV_FILE" | cut -d= -f2-)"
+  ip="$(curl -fsS ifconfig.me 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}' || echo '<YOUR_VM_IP>')"
   echo
   echo "==============================================="
   echo " Deployed. Frontend: http://${ip}:${port}"
@@ -884,18 +843,18 @@ main_up() {
   echo "==============================================="
 }
 
-main_stop()   { ensure_prereqs; compose_stop; }
-main_destroy(){ ensure_prereqs; compose_destroy; }
+main_stop()    { ensure_prereqs; compose_stop; }
+main_destroy() { ensure_prereqs; compose_destroy; }
 
-# ---------------- Entry ----------------
+# ---------- Entry ----------
 require_root
-ensure_prereqs   # So we can use $COMPOSE_BIN in all branches
+ensure_prereqs
 
 action="${1:-}"
 case "$action" in
   up|create|update|run) main_up ;;
-  stop) main_stop ;;
-  destroy|down|reset) main_destroy ;;
+  stop)                 main_stop ;;
+  destroy|down|reset)   main_destroy ;;
   *)
     while true; do
       menu; read -r ans
