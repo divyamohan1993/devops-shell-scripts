@@ -1,18 +1,102 @@
 #!/usr/bin/env bash
-# Idempotent tri-service app installer/manager:
-#   - Next.js (frontend) :12000 public
-#   - Flask (backend)    internal-only
-#   - Postgres (db)      internal-only
-# Includes a watcher to coordinate group stop/restart behavior.
+# Idempotent tri-service app installer/manager with verbose diagnostics:
+#   - Next.js (frontend) public on :12000
+#   - Flask (backend)    internal only
+#   - Postgres (db)      internal only
+# Includes watcher to coordinate group stop/restart behavior.
+# Always prints actionable, verbose errors.
 
 set -Eeuo pipefail
 
+#############################################
+# Verbose error trap + diagnostics
+#############################################
+SCRIPT_NAME="$(basename "$0")"
+on_err() {
+  local exit_code=$?
+  local line=${BASH_LINENO[0]:-0}
+  local cmd=${BASH_COMMAND:-"<unknown>"}
+  echo
+  echo "────────────────────────────────────────────────────────────────"
+  echo "[x] ${SCRIPT_NAME} failed"
+  echo "    ↳ Exit code : ${exit_code}"
+  echo "    ↳ At line   : ${line}"
+  echo "    ↳ Command   : ${cmd}"
+  echo "────────────────────────────────────────────────────────────────"
+  echo "[*] Quick diagnostics:"
+  echo "    - Docker version: $(docker --version 2>/dev/null || echo 'not found')"
+  if command -v docker >/dev/null 2>&1; then
+    echo "    - Compose version: $($COMPOSE_BIN version 2>/dev/null || echo 'not found')"
+  fi
+  if [[ -f "$COMPOSE_FILE" ]]; then
+    echo
+    echo "    ► docker compose ps"
+    $COMPOSE_BIN -f "$COMPOSE_FILE" ps || true
+    echo
+    echo "    ► docker compose config (first 120 lines)"
+    $COMPOSE_BIN -f "$COMPOSE_FILE" config | sed -n '1,120p' || true
+  fi
+
+  echo
+  echo "    ► Port checks"
+  FRONTEND_PORT="$(grep -E '^FRONTEND_PORT=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || echo '12000')"
+  if command -v ss >/dev/null 2>&1; then
+    ss -tulpn 2>/dev/null | grep -E ":${FRONTEND_PORT}\b" || echo "      (No process listening on :${FRONTEND_PORT})"
+  else
+    netstat -tulpn 2>/dev/null | grep -E ":${FRONTEND_PORT}\b" || echo "      (No process listening on :${FRONTEND_PORT})"
+  fi
+
+  echo
+  echo "    ► Container health (db, backend, frontend)"
+  if [[ -f "$COMPOSE_FILE" ]]; then
+    for svc in db backend frontend; do
+      cid="$($COMPOSE_BIN -f "$COMPOSE_FILE" ps -q "$svc" 2>/dev/null || true)"
+      [[ -z "$cid" ]] && { echo "      - $svc: no container"; continue; }
+      st="$(docker inspect -f '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}}' "$cid" 2>/dev/null || echo '?')"
+      echo "      - $svc: $st"
+    done
+  fi
+
+  echo
+  echo "    ► Last 120 lines of DB logs (if any)"
+  if [[ -f "$COMPOSE_FILE" ]]; then
+    $COMPOSE_BIN -f "$COMPOSE_FILE" logs --tail=120 db || true
+  fi
+
+  # Heuristic suggestions
+  echo
+  echo "[!] Suggested fixes:"
+  if [[ -f "$COMPOSE_FILE" ]]; then
+    db_logs="$($COMPOSE_BIN -f "$COMPOSE_FILE" logs --no-color --tail=500 db 2>/dev/null || true)"
+    if echo "$db_logs" | grep -qiE 'Operation not permitted|chown|setuid|setgid'; then
+      echo "    - Postgres failed with permissions/capabilities during init."
+      echo "      The script already avoids over-strict caps for DB. Re-run: sudo bash $SCRIPT_NAME up"
+    fi
+    if echo "$db_logs" | grep -qiE 'FATAL|database files are incompatible|initdb|could not create directory|permission denied|no space left on device'; then
+      echo "    - DB init error detected. Try:"
+      echo "        • Ensure disk space: df -h"
+      echo "        • Reset DB volume (DESTROYS DATA): sudo bash $SCRIPT_NAME destroy  &&  sudo bash $SCRIPT_NAME up"
+    fi
+  fi
+
+  echo
+  echo "    - If port ${FRONTEND_PORT} is taken, edit ${ENV_FILE} -> FRONTEND_PORT=<free_port> and rerun:"
+  echo "        sudo bash $SCRIPT_NAME up"
+  echo
+  echo "[i] The script is idempotent. Fix the cause above and rerun the same command."
+  echo "────────────────────────────────────────────────────────────────"
+  exit "$exit_code"
+}
+trap on_err ERR
+
+#############################################
+# Basics / Globals
+#############################################
 require_root() { if [[ $EUID -ne 0 ]]; then echo "Please run with sudo or as root." >&2; exit 1; fi; }
 log()  { printf "[*] %s\n" "$*"; }
 warn() { printf "[!] %s\n" "$*" >&2; }
 die()  { printf "[x] %s\n" "$*" >&2; exit 1; }
 
-# ---------- Constants ----------
 APP_ROOT="/opt/triapp"
 ENV_FILE="${APP_ROOT}/.env"
 COMPOSE_FILE="${APP_ROOT}/docker-compose.yml"
@@ -21,7 +105,6 @@ WATCHER_UNIT="/etc/systemd/system/triapp-watcher.service"
 DEFAULT_APP_NAME="triapp"
 DEFAULT_FRONTEND_PORT="12000"
 
-# ---------- Helpers ----------
 rand_b64() { openssl rand -base64 48 | tr -d '\n'; }
 rand_hex() { openssl rand -hex 32   | tr -d '\n'; }
 os_id() { . /etc/os-release 2>/dev/null || true; echo "${ID:-unknown}"; }
@@ -77,6 +160,9 @@ ensure_prereqs() {
   fi
 }
 
+#############################################
+# .env management (idempotent, user-overridable)
+#############################################
 declare -A ENVV
 load_env_file() {
   ENVV=()
@@ -89,7 +175,6 @@ load_env_file() {
     done < "$ENV_FILE"
   fi
 }
-
 getv() { local k="$1" d="$2"; echo "${ENVV[$k]:-$d}"; }
 
 write_env_file() {
@@ -144,8 +229,11 @@ API_INTERNAL_BASE=${API_INTERNAL_BASE}
 EOF
 }
 
+#############################################
+# Compose + App files
+#############################################
 write_compose_file() {
-  # Constant volume name 'triapp_db' (project-scoped as ${APP_NAME}_triapp_db)
+  # NOTE: DB service intentionally does NOT drop capabilities; init needs chown/setuid.
   cat > "$COMPOSE_FILE" <<'YML'
 name: ${APP_NAME}
 services:
@@ -221,16 +309,12 @@ services:
       - triapp_db:/var/lib/postgresql/data
       - ./db/init.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
     restart: unless-stopped
+    # IMPORTANT: no cap_drop and no 'user:' override here. Allow init to chown/setuid.
     healthcheck:
-      # Keep it credential-agnostic; only checks server readiness
       test: ["CMD-SHELL", "pg_isready -q -h 127.0.0.1 -p 5432 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 30
-    security_opt:
-      - no-new-privileges:true
-    cap_drop: ["ALL"]
-    read_only: false
     networks:
       - db_net
     expose:
@@ -685,6 +769,9 @@ write_db_seed() {
 SQL
 }
 
+#############################################
+# Watcher (group control)
+#############################################
 write_watcher() {
   mkdir -p "${APP_ROOT}/scripts" "${APP_ROOT}/systemd"
   cat > "$WATCHER_SCRIPT" <<'WATCH'
@@ -748,10 +835,12 @@ UNIT
   systemctl enable --now triapp-watcher.service
 }
 
+#############################################
+# Preflight + bring-up
+#############################################
 wait_for_health() {
   # wait_for_health <service> <timeout_sec>
   local service="$1" timeout="${2:-180}" elapsed=0 status cid
-  # Find container by labels (project + service)
   local project; project="$(grep -E '^APP_NAME=' "$ENV_FILE" | cut -d= -f2-)"
   while (( elapsed < timeout )); do
     cid="$(docker ps -a --filter "label=com.docker.compose.project=${project}" \
@@ -769,20 +858,29 @@ wait_for_health() {
 
 compose_up() {
   ( cd "$APP_ROOT" && $COMPOSE_BIN pull || true )
-  ( cd "$APP_ROOT" && $COMPOSE_BIN up -d --build || true )
+  ( cd "$APP_ROOT" && $COMPOSE_BIN up -d --build )
 
-  # Wait for DB to be healthy, then try starting dependents again
-  log "Waiting for database to become healthy..."
+  echo "[*] Waiting for database to become healthy..."
   if wait_for_health "db" 180; then
-    log "DB healthy. Ensuring all services are up..."
+    echo "[*] DB healthy. Ensuring all services are up..."
     ( cd "$APP_ROOT" && $COMPOSE_BIN up -d || true )
   else
-    warn "DB did not become healthy in time. Showing last 100 lines of DB logs:"
-    ( cd "$APP_ROOT" && $COMPOSE_BIN logs --tail=100 db || true )
-    die "Database unhealthy. Fix logs above, then rerun: sudo bash autoconfig.sh up"
+    echo
+    echo "[x] Database did NOT become healthy within timeout."
+    echo "    ► Show last 200 lines of DB logs:"
+    ( cd "$APP_ROOT" && $COMPOSE_BIN logs --tail=200 db || true )
+    echo
+    echo "[!] Common causes & fixes:"
+    echo "    - Permissions/capabilities during init → already fixed in this script (no cap_drop/user on DB)."
+    echo "      Rerun: sudo bash ${SCRIPT_NAME} up"
+    echo "    - Disk space or leftover corrupted volume:"
+    echo "        df -h"
+    echo "        sudo bash ${SCRIPT_NAME} destroy   # WARNING: deletes DB data"
+    echo "        sudo bash ${SCRIPT_NAME} up"
+    die "Database unhealthy."
   fi
 
-  # Optionally allow 12000 via UFW if active (does not touch SSH/22)
+  # UFW permissive for :12000 if enabled (doesn't touch 22)
   if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
     ufw allow 12000/tcp >/dev/null 2>&1 || true
   fi
@@ -802,14 +900,19 @@ compose_destroy() {
   if [[ -f "$COMPOSE_FILE" ]]; then
     ( cd "$APP_ROOT" && $COMPOSE_BIN down -v --remove-orphans || true )
   fi
-  docker volume rm -f "${DEFAULT_APP_NAME}_triapp_db" >/dev/null 2>&1 || true
-  # Also remove project-prefixed volume if APP_NAME changed
-  local appn; appn="$(grep -E '^APP_NAME=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || echo "$DEFAULT_APP_NAME")"
-  docker volume rm -f "${appn}_triapp_db" >/dev/null 2>&1 || true
+  # Try both generic and project-prefixed volume names (idempotent)
+  docker volume rm -f triapp_triapp_db >/dev/null 2>&1 || true
+  if [[ -f "$ENV_FILE" ]]; then
+    appn="$(grep -E '^APP_NAME=' "$ENV_FILE" | cut -d= -f2- || echo "$DEFAULT_APP_NAME")"
+    docker volume rm -f "${appn}_triapp_db" >/dev/null 2>&1 || true
+  fi
   rm -rf "$APP_ROOT"
   log "Destroyed all services, data, and watcher."
 }
 
+#############################################
+# Menu + main actions
+#############################################
 menu() {
   echo
   echo "==== autoconfig.sh ===="
@@ -841,12 +944,18 @@ main_up() {
   echo " App dir: ${APP_ROOT}"
   echo " Rerun autoconfig.sh anytime to apply changes."
   echo "==============================================="
+
+  echo
+  echo "[*] Post-run status (for your records):"
+  $COMPOSE_BIN -f "$COMPOSE_FILE" ps || true
 }
 
 main_stop()    { ensure_prereqs; compose_stop; }
 main_destroy() { ensure_prereqs; compose_destroy; }
 
-# ---------- Entry ----------
+#############################################
+# Entry
+#############################################
 require_root
 ensure_prereqs
 
