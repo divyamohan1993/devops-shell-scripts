@@ -180,16 +180,16 @@ case "$PWD" in
 esac
 
 touch "$LOG"
-echo "== Universal Java Dev Installer (quiet, fail-safe) ==" | tee -a "$LOG"
-echo "Log: $LOG"
-is_wsl && echo "(Detected WSL)" | tee -a "$LOG"
+echo -e "${BOLD}${BLUE}== Universal Java Dev Installer (quiet, fail-safe) ==${RESET}" | tee -a "$LOG"
+echo -e "${DIM}Log:${RESET} $LOG"
+is_wsl && echo -e "${CYAN}(Detected WSL)${RESET}" | tee -a "$LOG"
 
 # ---------- SUDO preflight (single prompt, then non-interactive) ----------
 SUDO=""; KEEPALIVE_PID=""
 if [ "$EUID" -ne 0 ]; then
   if have sudo; then
-    if ! sudo -n true 2>/dev/null; then
-      echo "Elevating privileges with sudo…" | tee -a "$LOG"
+    if ! sudo -n true 2>/dev/null; then      
+      echo -e "${CYAN}Elevating privileges with sudo…${RESET}" | tee -a "$LOG"
       sudo -v || { echo "ERROR: sudo authentication failed." | tee -a "$LOG"; exit 1; }
     fi
     # keep sudo fresh quietly
@@ -197,7 +197,7 @@ if [ "$EUID" -ne 0 ]; then
     KEEPALIVE_PID=$!; trap 'kill '"$KEEPALIVE_PID"' 2>/dev/null' EXIT
     SUDO="sudo -n"
   else
-    echo "WARNING: sudo not found and not root. Package installs may fail." | tee -a "$LOG"
+    echo -e "${YELLOW}WARNING:${RESET} sudo not found and not root. Package installs may fail." | tee -a "$LOG"
   fi
 fi
 
@@ -228,7 +228,8 @@ elif have port; then
   PM="port"; PM_UPDATE="$SUDO port -q selfupdate"; PM_INSTALL="$SUDO port -N install"
 fi
 
-echo "Detected: ID=$DIST_ID VER=$DIST_VER PM=$PM" | tee -a "$LOG"
+echo -e "Detected: ID=${BOLD}$DIST_ID${RESET} VER=${BOLD}$DIST_VER${RESET} PM=${BOLD}$PM${RESET}" | tee -a "$LOG"
+
 
 # ---------- Retry & apt recovery helpers ----------
 retry() {  # retry "<cmd>" [max] [delay]
@@ -313,7 +314,7 @@ ensure_cpp_toolchain(){
       export PATH="/opt/local/libexec/llvm-17/bin:$PATH"
       ;;
     *)
-      echo "WARNING: Unknown package manager '$PM'; cannot auto-install C++ toolchain." | tee -a "$LOG"
+      echo -e "${YELLOW}WARNING:${RESET} Unknown package manager '$PM'; cannot auto-install C++ toolchain." | tee -a "$LOG"
       ;;
   esac
 }
@@ -396,10 +397,10 @@ if [[ "${AUTO_ONLY_PY:-0}" -eq 1 ]]; then
   run "Remove sanity/smoke test projects" "rm -rf ${CLEAN_ROOTS[@]}"
   echo
   if [ "$FAIL_COUNT" -eq 0 ]; then
-    echo "SUCCESS — Python toolchain installed & tested. Log: $LOG"
+    echo -e "${BOLD}${GREEN}SUCCESS${RESET} — Python toolchain installed & tested. Log: $LOG"
     exit 0
   else
-    echo "FAIL — $FAIL_COUNT step(s) failed:"
+    echo -e "${BOLD}${RED}FAIL${RESET} — $FAIL_COUNT step(s) failed:"
     for s in "${FAILED_STEPS[@]}"; do echo "   - $s"; done
     echo "See detailed log: $LOG"
     exit 1
@@ -599,10 +600,10 @@ gradle runFlask
 # ---------- Summary ----------
 echo
 if [ "$FAIL_COUNT" -eq 0 ]; then
-  echo "SUCCESS — Java 17, Maven, Gradle installed & verified. Log: $LOG"
+  echo -e "${BOLD}${GREEN}SUCCESS${RESET} — Java 17, Maven, Gradle installed & verified. Log: $LOG"
   exit 0
 else
-  echo "FAIL — $FAIL_COUNT step(s) failed:"
+  echo -e "${BOLD}${RED}FAIL${RESET} — $FAIL_COUNT step(s) failed:"
   for s in "${FAILED_STEPS[@]}"; do echo "   - $s"; done
   echo "See detailed log: $LOG"
   exit 1
