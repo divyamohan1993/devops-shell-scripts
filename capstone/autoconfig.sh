@@ -299,7 +299,7 @@ services:
     expose:
       - "5000"
 
-  db:
+    db:
     image: postgres:16-alpine
     environment:
       - POSTGRES_DB=${POSTGRES_DB}
@@ -309,12 +309,19 @@ services:
       - triapp_db:/var/lib/postgresql/data
       - ./db/init.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
     restart: unless-stopped
-    # IMPORTANT: no cap_drop and no 'user:' override here. Allow init to chown/setuid.
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -q -h 127.0.0.1 -p 5432 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 30
+    # allow what Postgres init needs
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+      - FOWNER
+      - DAC_OVERRIDE
+    read_only: false
     networks:
       - db_net
     expose:
