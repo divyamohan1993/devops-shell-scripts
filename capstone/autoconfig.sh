@@ -360,7 +360,6 @@ const securityHeaders = [
   { key: 'X-Content-Type-Options', value: 'nosniff' },
   { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
   { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=(), interest-cohort=()' },
-  { key: 'Cross-Origin-Opener-Policy', value: 'same-origin' },
   { key: 'Cross-Origin-Resource-Policy', value: 'same-origin' },
   { key: 'Content-Security-Policy', value: "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none';" }
 ];
@@ -400,7 +399,7 @@ export default function Home() {
 INDEX
 
   cat > "${APP_ROOT}/frontend/pages/login.js" <<'LOGIN'
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 
 export default function Login() {
@@ -412,6 +411,12 @@ export default function Login() {
   const [msg, setMsg] = useState('');
   const router = useRouter();
 
+    // Prime CSRF cookie on first render so POSTs don't 403
+  useEffect(() => {
+    fetch('/api/csrf', { method: 'GET', credentials: 'include' }).catch(() => {});
+  }, []);
+
+
   const submit = async (e) => {
     e.preventDefault(); setMsg('');
     try {
@@ -420,10 +425,15 @@ export default function Login() {
       const res = await fetch(url, {
         method: 'POST',
         headers: {'Content-Type':'application/json', 'X-CSRF-Token': 'browser'},
+        credentials: 'include',
         body: JSON.stringify(body),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Request failed');
+      // Gracefully handle non-JSON error bodies (e.g., HTML 403 page)
+      const ct = res.headers.get('content-type') || '';
+      const data = ct.includes('application/json')
+        ? await res.json()
+        : { error: (await res.text()).slice(0, 200) };
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       if (data.qr_png_data_url) setQr(data.qr_png_data_url);
       if (data.ok) {
         await router.push('/dashboard');
@@ -671,6 +681,18 @@ def require_csrf():
     if token != "browser":
         abort(403)
     return True
+
+@app.get("/api/csrf")
+def issue_csrf():
+    """Prime a CSRF cookie for first-time clients so POSTs don't 403."""
+    csrf = csrf_signer.dumps({"ts": int(dt.utcnow().timestamp())})
+    resp = make_response(jsonify({"ok": True}))
+    resp.set_cookie(
+        "csrf", csrf,
+        httponly=False, samesite="Strict", secure=COOKIE_SECURE,
+        max_age=12*3600, path="/"
+    )
+    return resp
 
 @app.post("/api/auth/signup")
 @limiter.limit("20/hour")
