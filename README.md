@@ -9,21 +9,9 @@
   </a>
 </div>
 
-<a name="top"></a>
+<h1 align="center">DevOps & Deployment: L&amp;T EduTech Training Repository</h1>
 
-<div align="center" style="display:flex;justify-content:center;align-items:center;gap:48px;">
-  <a href="https://shooliniuniversity.com/" target="_blank">
-    <img src="https://shooliniuniversity.com/assets/images/logo.png" alt="Shoolini University — Logo" height="72">
-  </a>
-  <a href="https://lntedutech.com/" target="_blank">
-    <img src="https://lntedutech.com/wp-content/uploads/2024/01/edutech_logo.webp" alt="L&T EduTech — Logo" height="72">
-  </a>
-</div>
-
-<h1 align="center">DevOps & Deployment — Training Scripts and Labs</h1>
-
-<p align="center">Prepared by <strong>Divya Mohan</strong> (learning in public).</p>
-
+<p align="center">Prepared by <strong>Divya Mohan</strong> under the guidance of <strong>Prashant Singh Gautam</strong></p>
 <p align="center">
   <a href="https://github.com/divyamohan1993/devops-shell-scripts/actions/workflows/lint.yml">
     <img alt="Lint status" src="https://github.com/divyamohan1993/devops-shell-scripts/actions/workflows/lint.yml/badge.svg">
@@ -31,15 +19,10 @@
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-blue.svg"></a>
 </p>
 
-
-<h1 align="center">DevOps & Deployment — L&amp;T EduTech Training Repository</h1>
-
-<p align="center">Prepared by <strong>Divya Mohan</strong> under the guidance of <strong>Prashant Singh Gautam</strong></p>
-
 ### Academic Information
 
 - **Institution:** Shoolini University  
-- **Program:** L&T EduTech — DevOps & Deployment (Hands-on Training)  
+- **Program:** DevOps & Deployment by L&T EduTech (Hands-on Training)  
 - **Repository:** <a href="https://github.com/divyamohan1993/devops-shell-scripts/">github.com/divyamohan1993/devops-shell-scripts</a>
 
 
@@ -54,7 +37,7 @@
 - **CI and DevSecOps checks** (linting, secret scanning) you can reuse at work.
 - **Observability starters** (Prometheus/Grafana) to see what your services are doing.
 
-If you want practical reps, fast feedback, and fewer gotchas—this is for you.
+If you want practical reps, fast feedback, and fewer gotchas then this is for you.
 
 ---
 
