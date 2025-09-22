@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# oneclick-deploy-enterprise.sh
+# autoconfig.sh
 # Spring Boot fat JAR + blue/green + optional canary + hardened systemd + Nginx (+TLS/mTLS/basic auth)
 # SBOM + checksums + optional Trivy scan + optional cosign attestation + audit manifest + maintenance mode
 # Idempotent. Init-from-blank-VM. Debug-first. SSH/22 is explicitly preserved.
@@ -20,8 +20,8 @@ fi
 exec > >(tee -a "$LOG_FILE") 2>&1
 
 log(){ echo ">>> $*"; }
-warn(){ echo "!!! $*" >&2; }
-die(){ echo "!!! $*" >&2; exit 1; }
+warn(){ echo "!!! $*"; }
+die(){ echo "!!! $*"; exit 1; }
 trap 'echo "!!! failed at line $LINENO"; exit 1' ERR
 
 retry(){ # retry <attempts> <sleep> -- cmd...
@@ -105,7 +105,6 @@ AUDIT_FILE="$AUDIT_DIR/manifest-${TS}.json"
 # yes/no -> force
 HARDEN_MDWE="${HARDEN_MDWE:-auto}"
 
-
 # ------------------------- ROLLBACK -------------------------
 if [ "$ROLLBACK" = "1" ]; then
   [ -d "$RELEASES_DIR" ] || die "No releases found to roll back."
@@ -185,7 +184,6 @@ fi
 # ---- Blue/green (auto-resolve port conflicts) ----
 ACTIVE_PORT="$( [ -f "$ACTIVE_FILE" ] && cat "$ACTIVE_FILE" || echo "$PORT_A" )"
 INACTIVE_PORT="$PORT_B"; [ "$ACTIVE_PORT" = "$PORT_B" ] && INACTIVE_PORT="$PORT_A"
-# if inactive port is busy, pick a free one
 INACTIVE_PORT="$(free_port "$INACTIVE_PORT")"
 
 # --------------- Generate project ----------------
@@ -259,7 +257,7 @@ public class HelloController {
 }
 JAVA
 
-cat > "$PROJ_DIR/src/main/resources/application.properties" <<PROPS
+cat > "$PROJ_DIR/src/main/resources/application.properties" <<'PROPS'
 server.forward-headers-strategy=framework
 management.endpoints.web.exposure.include=health,info,prometheus
 management.endpoint.health.probes.enabled=true
@@ -270,8 +268,7 @@ PROPS
 # -------------- Build + SBOM + checksums -------------
 log "Building fat JAR + SBOM..."
 cd "$PROJ_DIR"
-# keep a persistent Maven cache under /opt/<app> for faster idempotent builds
-M2_LOCAL="$INSTALL_DIR/.m2/repository"; sudo mkdir -p "$M2_LOCAL"; sudo chown -R "$USER":"$USER" "$INSTALL_DIR/.m2"
+M2_LOCAL="$INSTALL_DIR/.m2/repository"; sudo mkdir -p "$M2_LOCAL"; sudo chown -R "$(id -un)":"$(id -gn)" "$INSTALL_DIR/.m2"
 mvn -q -Dmaven.repo.local="$M2_LOCAL" -DskipTests package
 mvn -q -Dmaven.repo.local="$M2_LOCAL" -DskipTests org.cyclonedx:cyclonedx-maven-plugin:2.8.0:makeAggregateBom || true
 
@@ -302,22 +299,44 @@ if [ "$CNT" -gt "$KEEP_RELEASES" ]; then
   ls -1dt "$RELEASES_DIR"/release-* | tail -n +"$((KEEP_RELEASES+1))" | xargs -r sudo rm -rf --
 fi
 
-# --------------- systemd hardened template ---------------
-sudo bash -c "cat > '$ENV_FILE'" <<ENVV
-JAVA_OPTS="-XX:+UseZGC -Xms256m -Xmx512m -XX:MaxRAMPercentage=75"
-SPRING_PROFILES_ACTIVE="prod"
-DEBUG="${DEBUG:-1}"
-if [ "${DEBUG}" = "1" ]; then
-  echo 'JAVA_TOOL_OPTIONS="$JAVA_TOOL_OPTIONS -Dlogging.level.root=DEBUG -Dlogging.level.org.springframework=DEBUG"' | sudo tee -a /etc/hello-boot/env >/dev/null
-else
-  echo 'JAVA_TOOL_OPTIONS="$JAVA_TOOL_OPTIONS -Dlogging.level.root=INFO"' | sudo tee -a /etc/hello-boot/env >/dev/null
-fi
-ENVV
+# --------------- Compute env + systemd values ---------------
+# Build final JAVA_OPTS and JAVA_TOOL_OPTIONS in the script (no shell inside env file)
+JAVA_OPTS_EFF="-XX:+UseZGC -Xms256m -Xmx512m -XX:MaxRAMPercentage=75"
 if [ "$JAVA_TLS13_ONLY" = "1" ]; then
-  echo 'JAVA_OPTS="$JAVA_OPTS -Djdk.tls.client.protocols=TLSv1.3 -Djdk.tls.server.protocols=TLSv1.3 -Dhttps.protocols=TLSv1.3"' | sudo tee -a "$ENV_FILE" >/dev/null
+  JAVA_OPTS_EFF="$JAVA_OPTS_EFF -Djdk.tls.client.protocols=TLSv1.3 -Djdk.tls.server.protocols=TLSv1.3 -Dhttps.protocols=TLSv1.3"
 fi
+if [ "${DEBUG:-1}" = "1" ]; then
+  JAVA_TOOL_OPTIONS_EFF="-Dlogging.level.root=DEBUG -Dlogging.level.org.springframework=DEBUG"
+else
+  JAVA_TOOL_OPTIONS_EFF="-Dlogging.level.root=INFO"
+fi
+
+# Write env file (literal KEY=VALUE pairs)
+sudo install -d -m 0755 "$ENV_DIR"
+sudo bash -c "cat > '$ENV_FILE'" <<ENVV
+JAVA_OPTS="$JAVA_OPTS_EFF"
+JAVA_TOOL_OPTIONS="$JAVA_TOOL_OPTIONS_EFF"
+SPRING_PROFILES_ACTIVE="prod"
+ENVV
 sudo chown "$APP_NAME:$APP_NAME" "$ENV_FILE"; sudo chmod 0644 "$ENV_FILE"
 
+# Compute MemoryDenyWriteExecute line once (no shell in unit file)
+MDWE_LINE="MemoryDenyWriteExecute=yes"
+case "$HARDEN_MDWE" in
+  yes) MDWE_LINE="MemoryDenyWriteExecute=yes" ;;
+  no)  MDWE_LINE="MemoryDenyWriteExecute=no"  ;;
+  auto)
+    if command -v java >/dev/null 2>&1 || command -v node >/dev/null 2>&1 || command -v dotnet >/dev/null 2>&1; then
+      MDWE_LINE="MemoryDenyWriteExecute=no"
+    else
+      MDWE_LINE="MemoryDenyWriteExecute=yes"
+    fi
+  ;;
+esac
+MEM_LINE=""
+[ "$MEMORY_MAX" != "0" ] && MEM_LINE="MemoryMax=$MEMORY_MAX"
+
+# --------------- systemd hardened template ---------------
 sudo bash -c "cat > '$SVC_TEMPLATE'" <<'UNIT'
 [Unit]
 Description=%i Spring Boot (hardened)
@@ -351,17 +370,7 @@ ProcSubset=pid
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
-case "$HARDEN_MDWE" in
-  yes)  echo "MemoryDenyWriteExecute=yes" ;;
-  no)   echo "MemoryDenyWriteExecute=no" ;;
-  auto)
-    if command -v java >/dev/null 2>&1 || command -v node >/dev/null 2>&1 || command -v dotnet >/dev/null 2>&1; then
-      echo "MemoryDenyWriteExecute=no"
-    else
-      echo "MemoryDenyWriteExecute=yes"
-    fi
-  ;;
-esac
+__MDWE_LINE__
 CapabilityBoundingSet=
 AmbientCapabilities=
 SystemCallArchitectures=native
@@ -373,11 +382,12 @@ TimeoutStopSec=25
 
 # Resource controls (see systemd.resource-control(5))
 CPUQuota=__CPU_QUOTA__
-# MemoryMax can be empty -> ignored
 __MEMORY_MAX_LINE__
+
+[Install]
+WantedBy=multi-user.target
 UNIT
-MEM_LINE=""
-[ "$MEMORY_MAX" != "0" ] && MEM_LINE="MemoryMax=$MEMORY_MAX"
+
 sudo sed -i \
   -e "s|__USER__|$APP_NAME|" \
   -e "s|__ENV_FILE__|$ENV_FILE|" \
@@ -385,6 +395,7 @@ sudo sed -i \
   -e "s|__CURRENT__|$CURRENT_DIR_LINK|" \
   -e "s|__CPU_QUOTA__|$CPU_QUOTA|" \
   -e "s|__MEMORY_MAX_LINE__|$MEM_LINE|" \
+  -e "s|__MDWE_LINE__|$MDWE_LINE|" \
   "$SVC_TEMPLATE"
 
 # Optional egress lockdown
@@ -420,20 +431,22 @@ sudo mkdir -p /var/log/journal
 sudo sed -ri 's/^#?Storage=.*/Storage=persistent/' /etc/systemd/journald.conf
 sudo systemctl restart systemd-journald
 
-# rotate app logs (nginx + journal export if desired)
-sudo tee /etc/logrotate.d/hello-boot >/dev/null <<'EOF'
-/var/log/nginx/*.log {
-  daily
-  rotate 14
-  compress
+# rotate nginx logs (and app access)
+sudo tee "/etc/logrotate.d/nginx-${APP_NAME}" >/dev/null <<ROT
+/var/log/nginx/${APP_NAME}.access.log {
+  weekly
+  rotate 8
   missingok
+  compress
+  delaycompress
   notifempty
+  create 0640 www-data adm
   sharedscripts
   postrotate
-    [ -s /run/nginx.pid ] && kill -USR1 `cat /run/nginx.pid`
+    [ -s /run/nginx.pid ] && kill -USR1 \`cat /run/nginx.pid\`
   endscript
 }
-EOF
+ROT
 
 # ------------------- Nginx site (advanced) ------------------
 if [ "$USE_NGINX" = "yes" ]; then
@@ -463,7 +476,6 @@ if [ "$USE_NGINX" = "yes" ]; then
   AUTH_LINES=""
   if [ "$BASIC_AUTH_ENABLE" = "1" ] && [ -n "$BASIC_AUTH_USER" ] && [ -n "$BASIC_AUTH_PASS" ]; then
     sudo mkdir -p /etc/nginx/auth
-    # create/replace htpasswd file (APR1)
     printf "%s:%s\n" "$BASIC_AUTH_USER" "$(openssl passwd -apr1 "$BASIC_AUTH_PASS")" | sudo tee /etc/nginx/auth/${APP_NAME}.htpasswd >/dev/null
     AUTH_LINES='auth_basic "Restricted"; auth_basic_user_file /etc/nginx/auth/'"${APP_NAME}"'.htpasswd;'
   fi
@@ -486,7 +498,7 @@ server {
   server_name ${DOMAIN:-_};
   server_tokens off;
 
-  # Security headers (OWASP secure headers)
+  # Security headers
   add_header X-Content-Type-Options "nosniff" always;
   add_header X-Frame-Options "DENY" always;
   add_header Referrer-Policy "strict-origin-when-cross-origin" always;
@@ -540,23 +552,6 @@ NGX
   # Ensure global rate limit zone exists (respect RATE)
   sudo bash -c "grep -q 'limit_req_zone' '$NGX_CONF' || sed -i \"1i limit_req_zone \\$binary_remote_addr zone=reqs:10m rate=${RATE};\" '$NGX_CONF'"
 
-  # Logrotate for app access log (weekly, 8 rotations)
-  sudo tee /etc/logrotate.d/nginx-${APP_NAME} >/dev/null <<ROT
-/var/log/nginx/${APP_NAME}.access.log {
-  weekly
-  rotate 8
-  missingok
-  compress
-  delaycompress
-  notifempty
-  create 0640 www-data adm
-  sharedscripts
-  postrotate
-    [ -s /run/nginx.pid ] && kill -USR1 \`cat /run/nginx.pid\`
-  endscript
-}
-ROT
-
   # Validate and reload Nginx; restore on failure
   if ! sudo nginx -t; then
     warn "nginx -t failed; reverting Nginx site changes."
@@ -569,7 +564,7 @@ ROT
 fi
 
 # ---------------- Flip or keep canary ----------------
-if [ "$USE_NGINX" = "yes" ] && [ "$CANARY_PERCENT" -eq 0 -o "$PROMOTE" = "1" ]; then
+if [ "$USE_NGINX" = "yes" ] && { [ "$CANARY_PERCENT" -eq 0 ] || [ "$PROMOTE" = "1" ]; }; then
   if systemctl is-active --quiet "${APP_NAME}@${ACTIVE_PORT}"; then
     log "Draining old instance on :$ACTIVE_PORT for ${DRAIN_SECONDS}s..."
     sleep "$DRAIN_SECONDS"
@@ -639,7 +634,7 @@ echo "Nginx site  : $NGX_SITE"
 echo "URL         : ${PUBLIC_URL}"
 if [ "$CANARY_PERCENT" -gt 0 ] && [ "$PROMOTE" = "0" ]; then
   echo "Canary      : ${CANARY_PERCENT}% new on :$INACTIVE_PORT (PROMOTE=1 to finalize)"
-fi
+fi"
 echo "SSH Safety  : OpenSSH ensured active; 22/tcp allow persisted. No firewall tightening performed."
 echo "Logs        : $LOG_FILE  (set DEBUG=0 to reduce verbosity)"
 echo "------------------------------------------------------------"
