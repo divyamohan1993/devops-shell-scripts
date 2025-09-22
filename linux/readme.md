@@ -737,15 +737,6 @@
 
 ---
 
-## How to use this README in your L\&T training repo
-
-1. Save as `README-bash.md` (or merge into your main `README.md`).
-2. During training, open a terminal and **run every command in order** (adjust paths as needed).
-3. Convert “one‑liners” into scripts by reusing the **30 scripted patterns**.
-4. Encourage learners to check `man`/`tldr` for each tool to build “muscle memory.”
-
----
-
 ### Production caveats (read me!)
 
 * `rm`, `find -delete`, `sed -i`, `setenforce`, firewall changes, and systemd actions can have **system‑wide impact**. Dry‑run first, target specific paths, and review diffs.
