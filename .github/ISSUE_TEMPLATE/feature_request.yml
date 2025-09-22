@@ -1,0 +1,17 @@
+name: "Feature request"
+description: Suggest an improvement or new lab
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: value
+    attributes:
+      label: What problem will this solve?
+      description: Describe the use‑case and outcome for users
+      placeholder: "As a learner/engineer, I want ..."
+    validations:
+      required: true
+  - type: textarea
+    id: approach
+    attributes:
+      label: Suggested approach (optional)
+      placeholder: Tools, examples, references

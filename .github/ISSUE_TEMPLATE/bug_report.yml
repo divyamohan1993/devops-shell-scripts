@@ -1,0 +1,26 @@
+name: "Bug report"
+description: Report a problem with a script or lab
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect vs. what did you see?
+      placeholder: Clear steps, logs, screenshots
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: Environment
+      description: OS, shell, container runtime, versions
+      placeholder: "Ubuntu 22.04, bash 5.1, Docker 24.x"
+  - type: textarea
+    id: steps
+    attributes:
+      label: Repro steps
+      value: |
+        1.
+        2.
+        3.

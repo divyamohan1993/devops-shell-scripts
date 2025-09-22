@@ -1,0 +1,6 @@
+# Default owners for everything
+* @divyamohan1993
+
+# Example: tighten reviews on infra or images (add more owners as needed)
+docker/**     @divyamohan1993
+k8s/**        @divyamohan1993

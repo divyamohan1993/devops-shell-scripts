@@ -1,0 +1,8 @@
+cff-version: 1.2.0
+message: "If you use this training repo, please cite it."
+title: "DevOps & Deployment: Training Scripts and Labs"
+authors:
+  - family-names: Mohan
+    given-names: Divya
+version: "0.1.0"
+repository-code: "https://github.com/divyamohan1993/devops-shell-scripts"

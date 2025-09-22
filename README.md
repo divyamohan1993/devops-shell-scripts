@@ -9,6 +9,29 @@
   </a>
 </div>
 
+<a name="top"></a>
+
+<div align="center" style="display:flex;justify-content:center;align-items:center;gap:48px;">
+  <a href="https://shooliniuniversity.com/" target="_blank">
+    <img src="https://shooliniuniversity.com/assets/images/logo.png" alt="Shoolini University — Logo" height="72">
+  </a>
+  <a href="https://lntedutech.com/" target="_blank">
+    <img src="https://lntedutech.com/wp-content/uploads/2024/01/edutech_logo.webp" alt="L&T EduTech — Logo" height="72">
+  </a>
+</div>
+
+<h1 align="center">DevOps & Deployment — Training Scripts and Labs</h1>
+
+<p align="center">Prepared by <strong>Divya Mohan</strong> (learning in public).</p>
+
+<p align="center">
+  <a href="https://github.com/divyamohan1993/devops-shell-scripts/actions/workflows/lint.yml">
+    <img alt="Lint status" src="https://github.com/divyamohan1993/devops-shell-scripts/actions/workflows/lint.yml/badge.svg">
+  </a>
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-blue.svg"></a>
+</p>
+
+
 <h1 align="center">DevOps & Deployment — L&amp;T EduTech Training Repository</h1>
 
 <p align="center">Prepared by <strong>Divya Mohan</strong> under the guidance of <strong>Prashant Singh Gautam</strong></p>
@@ -19,72 +42,79 @@
 - **Program:** L&T EduTech — DevOps & Deployment (Hands-on Training)  
 - **Repository:** <a href="https://github.com/divyamohan1993/devops-shell-scripts/">github.com/divyamohan1993/devops-shell-scripts</a>
 
----
 
-## Introduction
 
-<div style="text-align: justify !important">
-This repository is an academic training archive for DevOps and Deployment at Shoolini University in collaboration with L&amp;T EduTech. It consolidates scripts, reproducible labs, and implementation notes that emphasize practical, production-aware skills: shell best practices, containerization, orchestration, CI/CD, Infrastructure as Code, DevSecOps controls, and observability. Content is iterative and versioned as the training progresses, with an emphasis on safe experimentation (VMs/containers), traceable automation, and enterprise-style guardrails.
-</div>
+## What this repo does for you
 
-## Learning Objectives
+**Short version:** it helps you **learn and practice real DevOps** with small, reproducible labs you can run safely on a VM or in containers. You’ll pick up solid Bash habits, build and ship containers, wire up CI, add observability, and keep security in the loop—without wading through bloated boilerplate.
 
-- Apply **strict, reproducible Bash** patterns with linting, logging, and safe defaults.  
-- Build **containerized** workflows and deploy to **Kubernetes** with Helm/Kustomize.  
-- Implement **CI/CD** pipelines with quality and security gates (ShellCheck, Semgrep, Trivy, Gitleaks).  
-- Manage **Infrastructure as Code** (Terraform/OpenTofu) and environment promotion.  
-- Instrument services with **metrics, logging, dashboards**, and actionable alerts.  
-- Practice **DevSecOps**: SCA, SAST/DAST, SBOMs & signing, policy-as-code, and runtime monitoring.
+**You’ll get:**
+- **Copy‑pasteable Bash** with safe defaults (`bash -euxo pipefail`), ready to tweak.
+- **Container & K8s labs** that show *how* to deploy, not just *what* to click.
+- **CI and DevSecOps checks** (linting, secret scanning) you can reuse at work.
+- **Observability starters** (Prometheus/Grafana) to see what your services are doing.
 
-## Methodology & Lab Format
-
-<div style="text-align: justify !important">
-Each section follows a simple loop so you can learn fast and safely:
-</div>
-
-1. **Set up** a minimal, isolated environment (container or throwaway VM).  
-2. **Execute** the script or workflow (with strict Bash flags and logging).  
-3. **Validate** via checks (lint, tests, scans, or health probes).  
-4. **Observe** with basic telemetry (logs/metrics) and note outcomes.  
-5. **Reflect**: record what changed, what broke, and how to harden next time.
-
-> **Guardrails:** default to least privilege, avoid hard-coded secrets, prefer env vars and .env files (never commit real secrets), and keep scripts idempotent.
+If you want practical reps, fast feedback, and fewer gotchas—this is for you.
 
 ---
 
-## Environment & Prerequisites
+## Who it’s for
 
-- Linux/macOS shell (Bash ≥ 4), `curl`, `jq`, `git`  
-- **Containers:** Docker or Podman; optional: kind/minikube, `kubectl`, **Helm**  
-- **IaC:** Terraform or **OpenTofu**  
-- **Security tooling (optional to start):** ShellCheck, Gitleaks, Trivy, Semgrep, Syft/CycloneDX, cosign
+- Students and early‑career engineers who want hands‑on, **production‑aware** workflows.  
+- Developers moving toward DevOps/SRE and looking for **sane, repeatable** scripts.  
+- Busy pros who want **small labs** to demo an idea before committing infra time.
 
+---
 
-## How to Use This Repository
+## What’s inside (high‑level map)
 
-1) **Clone & explore**
+- `docker/` — container builds & compose examples  
+- `k8s/` — manifests, kind/minikube helpers, Helm/Kustomize snippets  
+- `jenkins/` — Jenkins auto‑config examples  
+- `sonarcube/` — SonarQube auto‑config + compose  
+- `prometheus/`, `grafana/` — metrics + dashboards starters  
+- `springboot/` — app bits used in some labs  
+- `zero-trust-mysql*` — experiments around safer DB access  
+- `autoscalling-loadbalancing-demo/` — scaling & LB demo scripts  
+
+> Everything is designed to run in an **isolated environment** (container or throwaway VM) first. Start small, break safely, then harden.
+
+---
+
+## Quick start (5–10 minutes)
+
 ```bash
+# 1) Clone
 git clone https://github.com/divyamohan1993/devops-shell-scripts.git
 cd devops-shell-scripts
+
+# 2) Try a lab (example: a docker/ or k8s/ script)
+# Always run with strict bash flags while experimenting:
+bash -euxo pipefail ./docker/<some-script>.sh   # or k8s/, jenkins/, etc.
+
+# 3) (Optional) Run the linters locally
+#   Install shellcheck, then:
+shellcheck $(git ls-files '*.sh') || true
+
+# container scan examples
+trivy image alpine:3.20
+grype alpine:3.20
+
+# IaC checks
+checkov -d ./iac
 ````
 
-2. **Run a script safely**
+> Tip: Prefer containers or a disposable VM. Never run unreviewed scripts on production systems.
 
-```bash
-# strict mode + trace; run inside a container/VM when possible
-bash -euxo pipefail scripts/your-script.sh
-```
+---
 
-3. **Validate & learn**
+## Learning objectives
 
-```bash
-# lint
-shellcheck ./scripts/**/*.sh || true
-
-# quick scans (optional)
-trivy image alpine:3.20
-gitleaks detect --no-banner
-```
+* Write **defensive Bash** (linted, logged, idempotent).
+* Build & ship **containers**; deploy to **Kubernetes** (Helm/Kustomize friendly).
+* Wire **CI** with quality/security gates (lint, secret scans).
+* Manage **IaC** choices and environment promotion.
+* Add **observability**: metrics, dashboards, and basic alerts.
 
 ---
 
@@ -115,10 +145,10 @@ gitleaks detect --no-banner
 ## Why DevOps
 
 <div style="text-align: justify !important">
-Before diving into specific tools, this course emphasizes the outcomes DevOps enables: repeatable builds, safe releases, faster feedback, and secure-by-default systems. The following “Top 10” lists map these outcomes to the most common, enterprise-grade capabilities you’ll exercise in labs and in real-world teams.
+This course emphasizes the outcomes DevOps enables: repeatable builds, safe releases, faster feedback, and secure-by-default systems. The following “Top 10” lists map these outcomes to the most common, enterprise-grade capabilities you’ll exercise in labs and in real-world teams.
 </div>
 
-## DevOps — Top 10 Daily Things & the Tools You’ll See
+## DevOps — Top 10 Daily Tools
 
 1. **Git-based source control & PR flow**
    Tools: GitHub / GitLab / Bitbucket. (Git is near-universal across teams.)
@@ -150,7 +180,7 @@ Before diving into specific tools, this course emphasizes the outcomes DevOps en
 10. **Project tracking & ChatOps**
     Tools: Jira / GitHub Issues / Azure Boards; Slack / Microsoft Teams for alerts & runbooks.
 
-## DevSecOps — Top 10 Daily Things & the Tools You’ll See
+## DevSecOps — Top 10 Daily Tools
 
 1. **Software Composition Analysis (SCA) & dependency updates**
    Tools: Dependabot, Snyk, OWASP Dependency-Check, Renovate.
@@ -182,23 +212,6 @@ Before diving into specific tools, this course emphasizes the outcomes DevOps en
 10. **Vulnerability management & SIEM/SOAR**
     Tools: Tenable Nessus, Qualys, Defender for Cloud; SIEMs: Splunk, Sentinel.
 
-## Quick start
-
-```bash
-# lint shell scripts (add to CI)
-shellcheck ./scripts/**/*.sh
-
-# run safely: strict mode + trace
-bash -euxo pipefail scripts/your-script.sh
-
-# container scan examples
-trivy image alpine:3.20
-grype alpine:3.20
-
-# IaC checks
-checkov -d ./iac
-```
-
 ---
 
 ## Notes, Credits & Responsible Use
@@ -217,10 +230,11 @@ Thanks to the instructor, peers, and the broader open-source community whose too
 
 ### Contact & Contributions
 
-Have ideas or spot issues? Please open a **GitHub Issue** in this repo. PRs are welcome as the repo matures.
+Have ideas or spot issues? Please open a **GitHub Issue** in this repo. Discussions and PRs welcome—start with a Discussion for ideas. See **CONTRIBUTING.md** for the fast path (branch naming, checks, PR checklist). Please report security findings privately (see **SECURITY.md**).
 
-### License & Trademarks
 
-See **LICENSE** for usage terms. Logos are property of their respective owners and are used here **for identification only**.
+### License & attribution
+
+MIT © Divya Mohan. Logos belong to their respective owners and are used only for identification.
 
 <p align="right"><a href="#top">Back to top ↑</a></p>
