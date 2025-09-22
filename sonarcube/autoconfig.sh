@@ -124,7 +124,7 @@ sudo systemctl start sonarqube
 echo "[J] Wait for health"
 for i in {1..70}; do
   if curl -fsS http://127.0.0.1:9000/api/system/health | grep -q '"status":"UP"'; then
-    echo "✅ SonarQube is UP"
+    echo "SonarQube is UP"
     break
   fi
   sleep 6
