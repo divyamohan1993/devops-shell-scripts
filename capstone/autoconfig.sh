@@ -360,8 +360,19 @@ const securityHeaders = [
   { key: 'X-Content-Type-Options', value: 'nosniff' },
   { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
   { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=(), interest-cohort=()' },
+  // COOP removed for HTTP to avoid console noise. Re-enable under HTTPS.
   { key: 'Cross-Origin-Resource-Policy', value: 'same-origin' },
-  { key: 'Content-Security-Policy', value: "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none';" }
+  {
+    key: 'Content-Security-Policy',
+    value: [
+      "default-src 'self'",
+      "img-src 'self' data:",
+      "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com",
+      "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com",
+      "font-src 'self' https://cdnjs.cloudflare.com data:",
+      "connect-src 'self'"
+    ].join('; ')
+  }
 ];
 const nextConfig = {
   async headers() { return [{ source: '/(.*)', headers: securityHeaders }]; },
@@ -372,7 +383,43 @@ NCFG
 
   cat > "${APP_ROOT}/frontend/pages/_app.js" <<'APP'
 import React from 'react';
-export default function MyApp({ Component, pageProps }) { return <Component {...pageProps} />; }
+import Head from 'next/head';
+
+export default function MyApp({ Component, pageProps }) {
+  return (
+    <>
+      <Head>
+        {/* Bootstrap 5 */}
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.3/css/bootstrap.min.css" crossOrigin="anonymous" referrerPolicy="no-referrer" />
+        <script defer src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.3/js/bootstrap.bundle.min.js" crossOrigin="anonymous" referrerPolicy="no-referrer"></script>
+        {/* Animate.css */}
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css" crossOrigin="anonymous" referrerPolicy="no-referrer" />
+        {/* SweetAlert2 */}
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/limonte-sweetalert2/11.12.4/sweetalert2.min.css" crossOrigin="anonymous" referrerPolicy="no-referrer" />
+        <script defer src="https://cdnjs.cloudflare.com/ajax/libs/limonte-sweetalert2/11.12.4/sweetalert2.all.min.js" crossOrigin="anonymous" referrerPolicy="no-referrer"></script>
+        {/* Font Awesome */}
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.6.0/css/all.min.css" crossOrigin="anonymous" referrerPolicy="no-referrer" />
+        <title>{process.env.NEXT_PUBLIC_APP_NAME || 'TriApp'}</title>
+      </Head>
+      <div className="bg-light min-vh-100">
+        <nav className="navbar navbar-expand-lg navbar-dark bg-dark">
+          <div className="container">
+            <a className="navbar-brand" href="/">{process.env.NEXT_PUBLIC_APP_NAME || 'TriApp'}</a>
+            <div className="d-flex gap-2">
+              <a className="btn btn-outline-light btn-sm" href="/login">Login / Signup</a>
+            </div>
+          </div>
+        </nav>
+        <main className="container py-5">
+          <Component {...pageProps} />
+        </main>
+        <footer className="text-center text-muted py-4">
+          <small>© {new Date().getFullYear()} TriApp</small>
+        </footer>
+      </div>
+    </>
+  );
+}
 APP
 
   cat > "${APP_ROOT}/frontend/pages/healthz.js" <<'HZ'
@@ -382,18 +429,25 @@ HZ
 
   cat > "${APP_ROOT}/frontend/pages/index.js" <<'INDEX'
 import Link from 'next/link';
+
 export default function Home() {
   return (
-    <main style={{maxWidth: 720, margin: '40px auto', fontFamily: 'system-ui, sans-serif'}}>
-      <h1>{process.env.NEXT_PUBLIC_APP_NAME}</h1>
-      <p>A minimal, secure, three-container app: Next.js + Flask + Postgres.</p>
-      <ul>
-        <li>Frontend (this) on port {process.env.NEXT_PUBLIC_PORT || '12000'}.</li>
-        <li>Backend only reachable internally.</li>
-        <li>Database isolated from the world.</li>
-      </ul>
-      <p><Link href="/login">Login / Sign up →</Link></p>
-    </main>
+    <div className="row justify-content-center text-center animate__animated animate__fadeInUp">
+      <div className="col-lg-8">
+        <h1 className="display-5 fw-bold mb-3">{process.env.NEXT_PUBLIC_APP_NAME || 'TriApp'}</h1>
+        <p className="lead text-muted">Secure, containerized Next.js + Flask + Postgres starter with enterprise‑grade auth.</p>
+        <div className="d-flex gap-3 justify-content-center mt-4">
+          <Link className="btn btn-primary btn-lg" href="/login"><i className="fa-solid fa-right-to-bracket me-2"></i>Login / Sign up</Link>
+          <a className="btn btn-outline-secondary btn-lg" href="#features"><i className="fa-solid fa-shield-halved me-2"></i>Security</a>
+        </div>
+        <img alt="hero" src="data:image/svg+xml;base64,PHN2ZyB3aWR0aD0nNjQwJyBoZWlnaHQ9JzMyMCcgeG1sbnM9J2h0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnJz48cmVjdCB3aWR0aD0nNjQwJyBoZWlnaHQ9JzMyMCcgcng9JzIwJyBmaWxsPSIjZWVlIi8+PHRleHQgeD0iNTAlIiB5PSIxNjAiIGR5PSIuMzVlbSIgZm9udC1zaXplPSI0MHB4IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmaWxsPSIjY2NjIj5OZXh0LmpzICsgRmxhc2sgKyBQb3N0Z3JlczwvdGV4dD48L3N2Zz4=" className="img-fluid rounded shadow mt-4" />
+        <div id="features" className="row mt-5 g-3">
+          <div className="col-md-4"><div className="card h-100"><div className="card-body"><i className="fa-solid fa-lock fa-2x mb-2"></i><h5>CSRF + HttpOnly Sessions</h5><p className="text-muted">Secure-by-default auth with rate limiting.</p></div></div></div>
+          <div className="col-md-4"><div className="card h-100"><div className="card-body"><i className="fa-solid fa-box fa-2x mb-2"></i><h5>Dockerized</h5><p className="text-muted">Separate containers and internal networks.</p></div></div></div>
+          <div className="col-md-4"><div className="card h-100"><div className="card-body"><i className="fa-solid fa-gauge-high fa-2x mb-2"></i><h5>Fast & Minimal</h5><p className="text-muted">Production‑ready structure with sane defaults.</p></div></div></div>
+        </div>
+      </div>
+    </div>
   );
 }
 INDEX
@@ -403,114 +457,309 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 
 export default function Login() {
-  const [mode, setMode] = useState('login');
+  const [mode, setMode] = useState('login'); // 'login' | 'signup'
+  const [signupStep, setSignupStep] = useState('form'); // 'form' | 'verify'
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [otp, setOtp] = useState('');
   const [qr, setQr] = useState(null);
+  const [confirmToken, setConfirmToken] = useState('');
   const [msg, setMsg] = useState('');
+  const [secondsLeft, setSecondsLeft] = useState(180);
   const router = useRouter();
 
-    // Prime CSRF cookie on first render so POSTs don't 403
+  // Prime CSRF cookie so POSTs don't 403
+  useEffect(() => { fetch('/api/csrf', { method: 'GET', credentials: 'include' }).catch(() => {}); }, []);
+
+  // Countdown while QR is visible
   useEffect(() => {
-    fetch('/api/csrf', { method: 'GET', credentials: 'include' }).catch(() => {});
-  }, []);
+    if (mode === 'signup' && signupStep === 'verify') {
+      const t = setInterval(() => setSecondsLeft((s) => (s > 0 ? s - 1 : 0)), 1000);
+      return () => clearInterval(t);
+    }
+  }, [mode, signupStep]);
 
-
-  const submit = async (e) => {
+  const handleSignup = async (e) => {
     e.preventDefault(); setMsg('');
     try {
-      const url = mode === 'signup' ? '/api/auth/signup' : '/api/auth/login';
-      const body = mode === 'signup' ? { email, password } : { email, password, otp };
-      const res = await fetch(url, {
+      const res = await fetch('/api/auth/signup', {
         method: 'POST',
         headers: {'Content-Type':'application/json', 'X-CSRF-Token': 'browser'},
         credentials: 'include',
-        body: JSON.stringify(body),
+        body: JSON.stringify({ email, password }),
       });
-      // Gracefully handle non-JSON error bodies (e.g., HTML 403 page)
       const ct = res.headers.get('content-type') || '';
-      const data = ct.includes('application/json')
-        ? await res.json()
-        : { error: (await res.text()).slice(0, 200) };
+      const data = ct.includes('application/json') ? await res.json() : { error: (await res.text()).slice(0, 200) };
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      if (data.qr_png_data_url) setQr(data.qr_png_data_url);
-      if (data.ok) {
-        await router.push('/dashboard');
-      } else if (data.need_otp) {
-        setMsg('Enter your 6-digit OTP from authenticator and submit again.');
-      } else {
-        setMsg('Done.');
+      setQr(data.qr_png_data_url);
+      setConfirmToken(data.confirm_token);
+      setSignupStep('verify');
+      setSecondsLeft(180);
+      setOtp('');
+      setMsg('');
+      // Fancy toast
+      window.Swal?.fire({ icon:'success', title:'Account created!', text:'Scan the QR with an Authenticator app, then enter the 6‑digit code.', timer:2200, showConfirmButton:false });
+    } catch (err) {
+      setMsg(err.message);
+    }
+  };
+
+  const confirm2FA = async (e) => {
+    e?.preventDefault?.();
+    setMsg('');
+    try {
+      const res = await fetch('/api/auth/confirm-2fa', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json', 'X-CSRF-Token': 'browser'},
+        credentials: 'include',
+        body: JSON.stringify({ token: confirmToken, otp }),
+      });
+      const data = await res.json().catch(async () => ({ error: (await res.text()).slice(0,200) }));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      window.Swal?.fire({ icon:'success', title:'2FA enabled', text:'Welcome! Redirecting to your dashboard...', timer:1600, showConfirmButton:false });
+      setTimeout(()=> router.push('/dashboard'), 900);
+    } catch (err) {
+      setMsg(err.message);
+    }
+  };
+
+  const login = async (e) => {
+    e.preventDefault(); setMsg('');
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json', 'X-CSRF-Token': 'browser'},
+        credentials: 'include',
+        body: JSON.stringify({ email, password, otp }),
+      });
+      const data = await res.json().catch(async () => ({ error: (await res.text()).slice(0,200) }));
+      if (res.status === 401 && data.need_otp) {
+        setMsg('Enter your 6‑digit code from the authenticator and submit again.');
+        return;
       }
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      window.Swal?.fire({ icon:'success', title:'Logged in', timer:1200, showConfirmButton:false });
+      router.push('/dashboard');
     } catch (err) { setMsg(err.message); }
   };
 
+  const cardClasses = "card shadow-sm animate__animated animate__fadeInUp";
   return (
-    <main style={{maxWidth: 420, margin: '40px auto', fontFamily: 'system-ui, sans-serif'}}>
-      <h1>{mode === 'signup' ? 'Sign up' : 'Login'}</h1>
-      <form onSubmit={submit}>
-        <label>Email<br /><input type="email" required value={email} onChange={e=>setEmail(e.target.value)} /></label><br /><br />
-        <label>Password<br /><input type="password" required value={password} onChange={e=>setPassword(e.target.value)} /></label><br /><br />
-        {mode==='login' && <>
-          <label>OTP (if enabled)<br /><input type="text" placeholder="123456" value={otp} onChange={e=>setOtp(e.target.value)} /></label><br /><br />
-        </>}
-        <button type="submit">{mode==='signup' ? 'Create account' : 'Sign in'}</button>
-      </form>
-      <p style={{marginTop:12}}><button onClick={()=>setMode(mode==='signup'?'login':'signup')}>Switch to {mode==='signup'?'Login':'Signup'}</button></p>
-      {qr && <>
-        <h3>Scan in your Authenticator</h3>
-        <img alt="TOTP QR" src={qr} style={{maxWidth:'100%'}} />
-        <p>After scanning, enter OTP above and click Login.</p>
-      </>}
-      {msg && <p style={{color:'crimson'}}>{msg}</p>}
-    </main>
+    <div className="row justify-content-center">
+      <div className="col-md-6 col-lg-5">
+        <div className={cardClasses}>
+          <div className="card-body p-4">
+            <h1 className="h3 mb-3 fw-bold">{mode === 'signup'
+              ? (signupStep === 'verify' ? 'Enable 2FA' : 'Sign up')
+              : 'Login'}</h1>
+
+            {mode === 'signup' && signupStep === 'form' && (
+              <form onSubmit={handleSignup} className="needs-validation" noValidate>
+                <div className="mb-3">
+                  <label className="form-label">Email</label>
+                  <input type="email" className="form-control" required value={email} onChange={e=>setEmail(e.target.value)} />
+                </div>
+                <div className="mb-3">
+                  <label className="form-label">Password</label>
+                  <input type="password" className="form-control" required value={password} onChange={e=>setPassword(e.target.value)} />
+                </div>
+                <button className="btn btn-primary w-100" type="submit">
+                  <i className="fa-solid fa-user-plus me-2"></i>Create account
+                </button>
+                <p className="text-center mt-3">
+                  <button type="button" className="btn btn-link" onClick={()=>{setMode('login'); setMsg('');}}>Switch to Login</button>
+                </p>
+              </form>
+            )}
+
+            {mode === 'signup' && signupStep === 'verify' && (
+              <>
+                <div className="alert alert-info d-flex align-items-center" role="alert">
+                  <i className="fa-solid fa-shield-halved me-2"></i>
+                  Scan the QR in Google Authenticator, 1Password, Authy, etc., then enter the current 6‑digit code.
+                </div>
+                <div className="text-center my-3">
+                  {qr && <img alt="TOTP QR" src={qr} className="img-fluid rounded border" style={{maxWidth:260}} />}
+                  <div className="mt-2 text-muted small">Time left to scan: {secondsLeft}s</div>
+                </div>
+                <form onSubmit={confirm2FA}>
+                  <div className="mb-3">
+                    <label className="form-label">Authenticator code</label>
+                    <input type="text" inputMode="numeric" pattern="[0-9]*" className="form-control" placeholder="123456" value={otp} onChange={e=>setOtp(e.target.value)} required />
+                  </div>
+                  <button className="btn btn-success w-100" type="submit">
+                    <i className="fa-solid fa-check me-2"></i>Confirm & continue
+                  </button>
+                </form>
+                <p className="text-center mt-3">
+                  <button type="button" className="btn btn-link" onClick={()=>{ setSignupStep('form'); setOtp(''); setQr(null); setMsg(''); }}>
+                    Start over
+                  </button>
+                </p>
+              </>
+            )}
+
+            {mode === 'login' && (
+              <form onSubmit={login}>
+                <div className="mb-3">
+                  <label className="form-label">Email</label>
+                  <input type="email" className="form-control" required value={email} onChange={e=>setEmail(e.target.value)} />
+                </div>
+                <div className="mb-3">
+                  <label className="form-label">Password</label>
+                  <input type="password" className="form-control" required value={password} onChange={e=>setPassword(e.target.value)} />
+                </div>
+                <div className="mb-3">
+                  <label className="form-label">OTP (if enabled)</label>
+                  <input type="text" className="form-control" placeholder="123456" value={otp} onChange={e=>setOtp(e.target.value)} />
+                </div>
+                <button className="btn btn-primary w-100" type="submit">
+                  <i className="fa-solid fa-right-to-bracket me-2"></i>Sign in
+                </button>
+                <p className="text-center mt-3">
+                  <button type="button" className="btn btn-link" onClick={()=>{ setMode('signup'); setSignupStep('form'); setOtp(''); setMsg(''); }}>
+                    Switch to Signup
+                  </button>
+                </p>
+              </form>
+            )}
+
+            {msg && <p className="mt-2 text-danger">{msg}</p>}
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 LOGIN
 
   cat > "${APP_ROOT}/frontend/pages/dashboard.js" <<'DASH'
 import Link from 'next/link';
+import { useState } from 'react';
 
 export async function getServerSideProps(context) {
-  const res = await fetch('http://backend:5000/api/me', { headers: { cookie: context.req.headers.cookie || '' } });
+  const cookie = context.req.headers.cookie || '';
+  const res = await fetch('http://backend:5000/api/me', { headers: { cookie } });
   if (res.status === 401) return { redirect: { destination: '/login', permanent: false } };
   const me = await res.json();
 
-  const eventsRes = await fetch('http://backend:5000/api/login-events', { headers: { cookie: context.req.headers.cookie || '' } });
+  const eventsRes = await fetch('http://backend:5000/api/login-events', { headers: { cookie } });
   const events = eventsRes.ok ? await eventsRes.json() : [];
 
-  const pgRes = await fetch('http://backend:5000/api/pg-info', { headers: { cookie: context.req.headers.cookie || '' } });
+  const pgRes = await fetch('http://backend:5000/api/pg-info', { headers: { cookie } });
   const pg = pgRes.ok ? await pgRes.json() : {};
 
   return { props: { me, events, pg } };
 }
 
 export default function Dashboard({ me, events, pg }) {
+  const [totp, setTotp] = useState(!!me.totp_enabled);
+
+  const enable2FA = async () => {
+    try {
+      const res = await fetch('/api/auth/setup-2fa', { method:'POST', headers:{'X-CSRF-Token':'browser'}, credentials:'include' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to start 2FA setup');
+      const { qr_png_data_url, confirm_token } = data;
+      const html = `
+        <div class="text-center">
+          <img src="${qr_png_data_url}" class="img-fluid rounded border mb-3" style="max-width:240px" />
+          <div class="mb-2">Scan with your authenticator, then enter the 6‑digit code:</div>
+          <input id="otp-input" class="swal2-input" placeholder="123456" inputmode="numeric" maxlength="6" />
+        </div>`;
+      const r = await window.Swal.fire({
+        title: 'Enable 2FA',
+        html, focusConfirm: false, showCancelButton: true, confirmButtonText: 'Confirm',
+        preConfirm: () => document.getElementById('otp-input')?.value || ''
+      });
+      if (!r.isConfirmed) return;
+      const otp = r.value;
+      const res2 = await fetch('/api/auth/confirm-2fa', {
+        method:'POST', headers:{'Content-Type':'application/json','X-CSRF-Token':'browser'}, credentials:'include',
+        body: JSON.stringify({ token: confirm_token, otp })
+      });
+      const data2 = await res2.json();
+      if (!res2.ok) throw new Error(data2.error || 'Invalid code');
+      setTotp(true);
+      await window.Swal.fire({ icon:'success', title:'2FA enabled', timer:1400, showConfirmButton:false });
+    } catch (e) {
+      window.Swal.fire({ icon:'error', title:'Failed', text: e.message });
+    }
+  };
+
+  const disable2FA = async () => {
+    const r = await window.Swal.fire({
+      title: 'Disable 2FA',
+      html: `<input id="pw" type="password" class="swal2-input" placeholder="Confirm your password" />`,
+      showCancelButton: true, confirmButtonText: 'Disable'
+    });
+    if (!r.isConfirmed) return;
+    const pw = document.getElementById('pw')?.value || '';
+    try {
+      const res = await fetch('/api/auth/disable-2fa', {
+        method:'POST', headers:{'Content-Type':'application/json','X-CSRF-Token':'browser'}, credentials:'include',
+        body: JSON.stringify({ password: pw })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed');
+      setTotp(false);
+      await window.Swal.fire({ icon:'success', title:'2FA disabled', timer:1400, showConfirmButton:false });
+    } catch (e) {
+      window.Swal.fire({ icon:'error', title:'Failed', text: e.message });
+    }
+  };
+
   return (
-    <main style={{maxWidth: 900, margin: '40px auto', fontFamily: 'system-ui, sans-serif'}}>
-      <h1>Welcome, {me.email}</h1>
-      <p><em>Security Center</em>: 2FA: <b>{me.totp_enabled ? 'Enabled' : 'Disabled'}</b> &mdash; Sessions: <b>{me.active_sessions}</b></p>
-      <section style={{marginTop: 24}}>
-        <h2>Valuable after-login content</h2>
-        <ul>
-          <li>Live Postgres info: version <b>{pg.version}</b>, current time <b>{pg.now}</b>.</li>
-          <li>Your recent login events (IP, time, outcome) below.</li>
-          <li>Rotating, HttpOnly session with CSRF protection already in place.</li>
-        </ul>
-      </section>
-      <section style={{marginTop: 24}}>
-        <h2>Recent logins</h2>
-        <table border="1" cellPadding="6" style={{borderCollapse:'collapse', width:'100%'}}>
-          <thead><tr><th>When</th><th>IP</th><th>Success</th></tr></thead>
-          <tbody>
-          {events.map((e, i) => (<tr key={i}><td>{e.at}</td><td>{e.ip}</td><td>{String(e.ok)}</td></tr>))}
-          </tbody>
-        </table>
-      </section>
-      <p style={{marginTop: 24}}><a href="/api/auth/logout">Log out</a> · <Link href="/">Home</Link></p>
-    </main>
+    <div className="animate__animated animate__fadeIn">
+      <div className="row g-4">
+        <div className="col-lg-8">
+          <div className="card shadow-sm">
+            <div className="card-body">
+              <h1 className="h4 mb-0">Welcome, {me.email}</h1>
+              <div className="text-muted">Live Postgres: v{pg.version || '—'} · {pg.now || '—'}</div>
+              <hr/>
+              <h2 className="h5">Recent logins</h2>
+              <div className="table-responsive">
+                <table className="table table-sm align-middle">
+                  <thead className="table-light"><tr><th>When (UTC)</th><th>IP</th><th>Success</th></tr></thead>
+                  <tbody>
+                  {events.map((e, i) => (<tr key={i}><td>{e.at}</td><td>{e.ip}</td><td>{String(e.ok)}</td></tr>))}
+                  {!events.length && <tr><td colSpan={3} className="text-center text-muted">No events</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="col-lg-4">
+          <div className="card shadow-sm">
+            <div className="card-body">
+              <h2 className="h5 mb-3">Security Center</h2>
+              <div className="d-flex align-items-center mb-3">
+                <i className={`fa-solid ${totp ? 'fa-shield-halved text-success' : 'fa-shield text-secondary'} me-2`}></i>
+                <span>2FA: <b>{totp ? 'Enabled' : 'Disabled'}</b></span>
+              </div>
+              {totp ? (
+                <button className="btn btn-outline-danger w-100" onClick={disable2FA}>
+                  <i className="fa-solid fa-toggle-off me-2"></i>Disable 2FA
+                </button>
+              ) : (
+                <button className="btn btn-outline-primary w-100" onClick={enable2FA}>
+                  <i className="fa-solid fa-toggle-on me-2"></i>Enable 2FA
+                </button>
+              )}
+              <hr/>
+              <a className="btn btn-secondary w-100" href="/api/auth/logout">Log out</a>
+              <p className="text-center mt-2"><Link href="/">Home</Link></p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
+
 DASH
 
   cat > "${APP_ROOT}/frontend/Dockerfile" <<'DFE'
@@ -620,6 +869,14 @@ def init_db():
 def healthz():
     return "ok", 200
 
+@app.get("/api/csrf")
+def issue_csrf():
+    """Prime a CSRF cookie for first-time clients so POSTs don't 403."""
+    csrf = csrf_signer.dumps({"ts": int(dt.utcnow().timestamp())})
+    resp = make_response(jsonify({"ok": True}))
+    resp.set_cookie("csrf", csrf, httponly=False, samesite="Strict", secure=COOKIE_SECURE, max_age=12*3600, path="/")
+    return resp
+
 def get_client_ip():
     fwd = request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
     ip = fwd or request.remote_addr or "0.0.0.0"
@@ -661,7 +918,7 @@ def current_user():
     except BadSignature:
         return None
     with db() as conn, conn.cursor() as cur:
-        cur.execute("""SELECT u.id, u.email, u.totp_secret,
+        cur.execute("""SELECT u.id, u.email, u.passhash, u.totp_secret,
                               (SELECT count(*) FROM sessions s2 WHERE s2.user_id = u.id) AS active_sessions
                        FROM users u JOIN sessions s ON s.user_id=u.id WHERE s.sid=%s""", (sid,))
         row = cur.fetchone()
@@ -682,21 +939,16 @@ def require_csrf():
         abort(403)
     return True
 
-@app.get("/api/csrf")
-def issue_csrf():
-    """Prime a CSRF cookie for first-time clients so POSTs don't 403."""
-    csrf = csrf_signer.dumps({"ts": int(dt.utcnow().timestamp())})
-    resp = make_response(jsonify({"ok": True}))
-    resp.set_cookie(
-        "csrf", csrf,
-        httponly=False, samesite="Strict", secure=COOKIE_SECURE,
-        max_age=12*3600, path="/"
-    )
-    return resp
+# ---------- Auth & 2FA ----------
 
 @app.post("/api/auth/signup")
 @limiter.limit("20/hour")
 def signup():
+    """
+    Create the user WITHOUT enabling 2FA yet.
+    Return a QR + a signed confirm_token (uid+secret).
+    The client will call /api/auth/confirm-2fa with the OTP to enable 2FA and create a session.
+    """
     require_csrf()
     j = request.get_json(force=True)
     email = (j.get("email") or "").strip().lower()
@@ -705,20 +957,75 @@ def signup():
         return jsonify({"error":"email/password required"}), 400
     try:
         pwhash = ph.hash(pw)
-        secret = pyotp.random_base32()
         with db() as conn, conn.cursor() as cur:
-            cur.execute("INSERT INTO users(email, passhash, totp_secret) VALUES(%s,%s,%s) RETURNING id", (email, pwhash, secret))
+            cur.execute("INSERT INTO users(email, passhash, totp_secret) VALUES(%s,%s,%s) RETURNING id", (email, pwhash, None))
             uid = cur.fetchone()["id"]; conn.commit()
+        # Generate TOTP secret but DO NOT store it yet
+        secret = pyotp.random_base32()
         uri = pyotp.TOTP(secret).provisioning_uri(name=email, issuer_name="TriApp")
         img = qrcode.make(uri); buf = BytesIO(); img.save(buf, format="PNG")
         qr_b64 = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
-        with db() as conn, conn.cursor() as cur:
-            cur.execute("INSERT INTO login_events(user_email, ip, ok) VALUES(%s,%s,%s)", (email, get_client_ip(), True)); conn.commit()
-        resp = set_session(uid)
-        resp.set_data(json.dumps({"ok": True, "qr_png_data_url": qr_b64})); resp.mimetype = "application/json"
-        return resp
+        token = signer.dumps({"uid": uid, "secret": secret, "purpose": "setup2fa"})
+        return jsonify({"ok": True, "qr_png_data_url": qr_b64, "confirm_token": token})
     except psycopg2.Error:
         return jsonify({"error":"Email already exists?"}), 400
+
+@app.post("/api/auth/confirm-2fa")
+@limiter.limit("40/hour")
+def confirm_2fa():
+    """Verify OTP for the provided confirm_token; on success, enable 2FA and start a session."""
+    require_csrf()
+    j = request.get_json(force=True)
+    token = j.get("token") or ""
+    otp = (j.get("otp") or "").strip()
+    if not token or not otp:
+        return jsonify({"error":"token and otp required"}), 400
+    try:
+        payload = signer.loads(token, max_age=15*60)  # 15 minutes
+    except BadSignature:
+        return jsonify({"error":"invalid or expired token"}), 400
+    if payload.get("purpose") != "setup2fa":
+        return jsonify({"error":"invalid token purpose"}), 400
+    uid = int(payload["uid"]); secret = payload["secret"]
+    if not pyotp.TOTP(secret).verify(otp, valid_window=1):
+        return jsonify({"error":"invalid otp"}), 401
+    with db() as conn, conn.cursor() as cur:
+        cur.execute("UPDATE users SET totp_secret=%s WHERE id=%s", (secret, uid)); conn.commit()
+        cur.execute("SELECT email FROM users WHERE id=%s", (uid,)); email = cur.fetchone()["email"]
+        cur.execute("INSERT INTO login_events(user_email, ip, ok) VALUES(%s,%s,%s)", (email, get_client_ip(), True)); conn.commit()
+    # Start session now
+    return set_session(uid)
+
+@app.post("/api/auth/setup-2fa")
+def setup_2fa():
+    """For logged-in users: generate a new secret & QR, but do NOT enable until confirmed via /confirm-2fa."""
+    require_csrf()
+    u = current_user()
+    if not u:
+        return jsonify({"error":"unauthorized"}), 401
+    secret = pyotp.random_base32()
+    uri = pyotp.TOTP(secret).provisioning_uri(name=u["email"], issuer_name="TriApp")
+    img = qrcode.make(uri); buf = BytesIO(); img.save(buf, format="PNG")
+    qr_b64 = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+    token = signer.dumps({"uid": int(u["id"]), "secret": secret, "purpose": "setup2fa"})
+    return jsonify({"ok": True, "qr_png_data_url": qr_b64, "confirm_token": token})
+
+@app.post("/api/auth/disable-2fa")
+def disable_2fa():
+    """Disable 2FA for the current user after password verification."""
+    require_csrf()
+    u = current_user()
+    if not u:
+        return jsonify({"error":"unauthorized"}), 401
+    j = request.get_json(force=True)
+    pw = j.get("password") or ""
+    try:
+        ph.verify(u["passhash"], pw)
+    except Exception:
+        return jsonify({"error":"incorrect password"}), 401
+    with db() as conn, conn.cursor() as cur:
+        cur.execute("UPDATE users SET totp_secret=NULL WHERE id=%s", (int(u["id"]),)); conn.commit()
+    return jsonify({"ok": True})
 
 @app.post("/api/auth/login")
 @limiter.limit("30/hour")
