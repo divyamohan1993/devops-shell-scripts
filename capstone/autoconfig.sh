@@ -353,14 +353,14 @@ write_frontend() {
 }
 PKG
 
-  cat > "${APP_ROOT}/frontend/next.config.js" <<'NCFG'
+    cat > "${APP_ROOT}/frontend/next.config.js" <<'NCFG'
 /** @type {import('next').NextConfig} */
 const securityHeaders = [
   { key: 'X-Frame-Options', value: 'DENY' },
   { key: 'X-Content-Type-Options', value: 'nosniff' },
   { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
   { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=(), interest-cohort=()' },
-  // COOP removed for HTTP to avoid console noise. Re-enable under HTTPS.
+  // COOP removed for HTTP to avoid console noise. Re-enable under HTTPS if desired.
   { key: 'Cross-Origin-Resource-Policy', value: 'same-origin' },
   {
     key: 'Content-Security-Policy',
@@ -381,11 +381,36 @@ const nextConfig = {
 module.exports = nextConfig;
 NCFG
 
-  cat > "${APP_ROOT}/frontend/pages/_app.js" <<'APP'
-import React from 'react';
+  cat > "${APP_ROOT}/frontend/pages/logout.js" <<'LOGOUT'
+import { useEffect } from 'react';
+import { useRouter } from 'next/router';
+
+export default function Logout() {
+  const router = useRouter();
+  useEffect(() => {
+    (async () => {
+      try { await fetch('/api/auth/logout', { credentials:'include' }); } catch {}
+      // Replace history to avoid going back to dashboard
+      router.replace('/');
+    })();
+  }, [router]);
+  return <p className="text-center">Signing you out…</p>;
+}
+LOGOUT
+
+    cat > "${APP_ROOT}/frontend/pages/_app.js" <<'APP'
+import React, { useEffect, useState } from 'react';
 import Head from 'next/head';
 
 export default function MyApp({ Component, pageProps }) {
+  const [authed, setAuthed] = useState(false);
+
+  useEffect(() => {
+    fetch('/api/me', { credentials: 'include' })
+      .then(r => setAuthed(r.ok))
+      .catch(() => setAuthed(false));
+  }, []);
+
   return (
     <>
       <Head>
@@ -401,16 +426,23 @@ export default function MyApp({ Component, pageProps }) {
         <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.6.0/css/all.min.css" crossOrigin="anonymous" referrerPolicy="no-referrer" />
         <title>{process.env.NEXT_PUBLIC_APP_NAME || 'TriApp'}</title>
       </Head>
-      <div className="bg-light min-vh-100">
+      <div className="bg-light min-vh-100 d-flex flex-column">
         <nav className="navbar navbar-expand-lg navbar-dark bg-dark">
           <div className="container">
             <a className="navbar-brand" href="/">{process.env.NEXT_PUBLIC_APP_NAME || 'TriApp'}</a>
             <div className="d-flex gap-2">
-              <a className="btn btn-outline-light btn-sm" href="/login">Login / Signup</a>
+              {authed ? (
+                <>
+                  <a className="btn btn-outline-light btn-sm" href="/dashboard"><i className="fa-solid fa-user me-1"></i> My Account</a>
+                  <a className="btn btn-light btn-sm" href="/logout"><i className="fa-solid fa-arrow-right-from-bracket me-1"></i> Logout</a>
+                </>
+              ) : (
+                <a className="btn btn-outline-light btn-sm" href="/login"><i className="fa-solid fa-right-to-bracket me-1"></i> Login / Signup</a>
+              )}
             </div>
           </div>
         </nav>
-        <main className="container py-5">
+        <main className="container py-5 flex-fill">
           <Component {...pageProps} />
         </main>
         <footer className="text-center text-muted py-4">
@@ -422,37 +454,120 @@ export default function MyApp({ Component, pageProps }) {
 }
 APP
 
+
   cat > "${APP_ROOT}/frontend/pages/healthz.js" <<'HZ'
 export default function Health() { return "ok"; }
 export async function getServerSideProps(){ return {props:{}} }
 HZ
 
-  cat > "${APP_ROOT}/frontend/pages/index.js" <<'INDEX'
+    cat > "${APP_ROOT}/frontend/pages/index.js" <<'INDEX'
 import Link from 'next/link';
 
-export default function Home() {
+export async function getServerSideProps(ctx){
+  // Detect auth to render correct CTA
+  const cookie = ctx.req.headers.cookie || '';
+  const res = await fetch('http://backend:5000/api/me', { headers: { cookie } });
+  const loggedIn = res.ok;
+  return { props: { loggedIn } };
+}
+
+export default function Home({ loggedIn }) {
+  const Section = ({icon, title, children}) => (
+    <div className="col-md-4">
+      <div className="card h-100 shadow-sm animate__animated animate__fadeInUp">
+        <div className="card-body">
+          <div className="mb-2"><i className={`fa-solid ${icon} fa-2x`}></i></div>
+          <h5 className="fw-bold">{title}</h5>
+          <div className="text-muted">{children}</div>
+        </div>
+      </div>
+    </div>
+  );
+
+  const checkHealth = async () => {
+    try{
+      const r = await fetch('/api/pg-info', { credentials:'include' });
+      if(!r.ok){ throw new Error('Log in to query DB health'); }
+      const j = await r.json();
+      window.Swal?.fire({ icon:'info', title:'Database', html:`<b>Version:</b> ${j.version}<br/><b>Time:</b> ${j.now}` });
+    }catch(e){
+      window.Swal?.fire({ icon:'warning', title:'Health', text: e.message || 'Not available' });
+    }
+  };
+
   return (
-    <div className="row justify-content-center text-center animate__animated animate__fadeInUp">
-      <div className="col-lg-8">
+    <div className="animate__animated animate__fadeInUp">
+      <div className="text-center">
         <h1 className="display-5 fw-bold mb-3">{process.env.NEXT_PUBLIC_APP_NAME || 'TriApp'}</h1>
-        <p className="lead text-muted">Secure, containerized Next.js + Flask + Postgres starter with enterprise‑grade auth.</p>
-        <div className="d-flex gap-3 justify-content-center mt-4">
-          <Link className="btn btn-primary btn-lg" href="/login"><i className="fa-solid fa-right-to-bracket me-2"></i>Login / Sign up</Link>
-          <a className="btn btn-outline-secondary btn-lg" href="#features"><i className="fa-solid fa-shield-halved me-2"></i>Security</a>
+        <p className="lead text-muted">Capstone for L&T DevOps Training — secure, containerized <b>Next.js</b> + <b>Flask</b> + <b>Postgres</b> on a GCP VM with Docker Compose.</p>
+        <div className="d-flex gap-3 justify-content-center mt-3">
+          {loggedIn ? (
+            <Link className="btn btn-primary btn-lg" href="/dashboard"><i className="fa-solid fa-user me-2"></i>My Account</Link>
+          ) : (
+            <Link className="btn btn-primary btn-lg" href="/login"><i className="fa-solid fa-right-to-bracket me-2"></i>Login / Sign up</Link>
+          )}
+          <a className="btn btn-outline-secondary btn-lg" href="https://github.com/divyamohan1993/devops-shell-scripts/" target="_blank" rel="noreferrer">
+            <i className="fa-brands fa-github me-2"></i>Project Repo
+          </a>
+          <button className="btn btn-outline-dark btn-lg" onClick={checkHealth}><i className="fa-solid fa-stethoscope me-2"></i>Check System Health</button>
         </div>
-        <img alt="hero" src="data:image/svg+xml;base64,PHN2ZyB3aWR0aD0nNjQwJyBoZWlnaHQ9JzMyMCcgeG1sbnM9J2h0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnJz48cmVjdCB3aWR0aD0nNjQwJyBoZWlnaHQ9JzMyMCcgcng9JzIwJyBmaWxsPSIjZWVlIi8+PHRleHQgeD0iNTAlIiB5PSIxNjAiIGR5PSIuMzVlbSIgZm9udC1zaXplPSI0MHB4IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmaWxsPSIjY2NjIj5OZXh0LmpzICsgRmxhc2sgKyBQb3N0Z3JlczwvdGV4dD48L3N2Zz4=" className="img-fluid rounded shadow mt-4" />
-        <div id="features" className="row mt-5 g-3">
-          <div className="col-md-4"><div className="card h-100"><div className="card-body"><i className="fa-solid fa-lock fa-2x mb-2"></i><h5>CSRF + HttpOnly Sessions</h5><p className="text-muted">Secure-by-default auth with rate limiting.</p></div></div></div>
-          <div className="col-md-4"><div className="card h-100"><div className="card-body"><i className="fa-solid fa-box fa-2x mb-2"></i><h5>Dockerized</h5><p className="text-muted">Separate containers and internal networks.</p></div></div></div>
-          <div className="col-md-4"><div className="card h-100"><div className="card-body"><i className="fa-solid fa-gauge-high fa-2x mb-2"></i><h5>Fast & Minimal</h5><p className="text-muted">Production‑ready structure with sane defaults.</p></div></div></div>
-        </div>
+      </div>
+
+      <hr className="my-5"/>
+
+      <h2 className="h4 mb-3">What’s inside</h2>
+      <div className="row g-3">
+        <Section icon="fa-box">
+          <ul className="mb-0">
+            <li>Three containers: <b>frontend (Next.js)</b>, <b>backend (Flask)</b>, <b>db (Postgres 16)</b>.</li>
+            <li>Isolated Compose networks: <code>web_net</code> (public), <code>app_net</code> (internal), <code>db_net</code> (internal).</li>
+            <li>Only frontend exposes port <b>12000</b> (Jenkins already on :80).</li>
+          </ul>
+        </Section>
+        <Section icon="fa-shield-halved">
+          <ul className="mb-0">
+            <li>HttpOnly, same-site session cookies; **CSRF** protection.</li>
+            <li>Password hashing with **Argon2**; rate limiting via Flask‑Limiter.</li>
+            <li>Optional **TOTP 2FA** (scan QR → confirm OTP before enabling).</li>
+            <li>Containers run as non‑root, <code>no-new-privileges</code>, capability drop (frontend/backend).</li>
+            <li>Strict **CSP** allowing only cdnjs + self; API on internal network.</li>
+          </ul>
+        </Section>
+        <Section icon="fa-diagram-project">
+          <ul className="mb-0">
+            <li>GCP VM hosting; Docker Compose orchestrates services & restart policy.</li>
+            <li>Watcher process: stop any container → stop all; restart main → restart aux.</li>
+            <li>Idempotent provisioning via <code>autoconfig.sh</code>.</li>
+          </ul>
+        </Section>
+      </div>
+
+      <div className="row g-3 mt-1">
+        <Section icon="fa-person-chalkboard" title="Usage">
+          <ol className="mb-0">
+            <li>Sign up → scan QR → enter OTP → account secured with 2FA.</li>
+            <li>Login supports “Remember me” for 30‑day sessions.</li>
+            <li>Dashboard shows DB info & recent login events; enable/disable 2FA anytime.</li>
+          </ol>
+        </Section>
+        <Section icon="fa-microchip" title="Quantum posture">
+          <ul className="mb-0">
+            <li>App secrets/signatures use 256‑bit keys; even with Grover’s algorithm that’s ~128‑bit security.</li>
+            <li>Argon2 is memory‑hard, limiting quantum speedups.</li>
+            <li><b>Not end‑to‑end PQC</b> yet: to be truly “quantum‑secure”, enable TLS with post‑quantum KEM (e.g., Kyber) and PQ signatures at the edge/reverse proxy.</li>
+          </ul>
+        </Section>
+        <Section icon="fa-book" title="Learn more">
+          <p className="mb-0">Capstone as part of L&T DevOps training. Source & automation scripts: <a href="https://github.com/divyamohan1993/devops-shell-scripts/" target="_blank" rel="noreferrer">github.com/divyamohan1993/devops-shell-scripts</a>.</p>
+        </Section>
       </div>
     </div>
   );
 }
 INDEX
 
-  cat > "${APP_ROOT}/frontend/pages/login.js" <<'LOGIN'
+
+    cat > "${APP_ROOT}/frontend/pages/login.js" <<'LOGIN'
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 
@@ -461,6 +576,7 @@ export default function Login() {
   const [signupStep, setSignupStep] = useState('form'); // 'form' | 'verify'
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [rememberMe, setRememberMe] = useState(true);
   const [otp, setOtp] = useState('');
   const [qr, setQr] = useState(null);
   const [confirmToken, setConfirmToken] = useState('');
@@ -468,7 +584,7 @@ export default function Login() {
   const [secondsLeft, setSecondsLeft] = useState(180);
   const router = useRouter();
 
-  // Prime CSRF cookie so POSTs don't 403
+  // Prime CSRF cookie
   useEffect(() => { fetch('/api/csrf', { method: 'GET', credentials: 'include' }).catch(() => {}); }, []);
 
   // Countdown while QR is visible
@@ -483,60 +599,41 @@ export default function Login() {
     e.preventDefault(); setMsg('');
     try {
       const res = await fetch('/api/auth/signup', {
-        method: 'POST',
-        headers: {'Content-Type':'application/json', 'X-CSRF-Token': 'browser'},
-        credentials: 'include',
-        body: JSON.stringify({ email, password }),
+        method: 'POST', headers: {'Content-Type':'application/json','X-CSRF-Token':'browser'},
+        credentials:'include', body: JSON.stringify({ email, password })
       });
-      const ct = res.headers.get('content-type') || '';
-      const data = ct.includes('application/json') ? await res.json() : { error: (await res.text()).slice(0, 200) };
+      const data = await res.json().catch(async () => ({ error:(await res.text()).slice(0,200) }));
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       setQr(data.qr_png_data_url);
       setConfirmToken(data.confirm_token);
-      setSignupStep('verify');
-      setSecondsLeft(180);
-      setOtp('');
-      setMsg('');
-      // Fancy toast
-      window.Swal?.fire({ icon:'success', title:'Account created!', text:'Scan the QR with an Authenticator app, then enter the 6‑digit code.', timer:2200, showConfirmButton:false });
-    } catch (err) {
-      setMsg(err.message);
-    }
+      setSignupStep('verify'); setSecondsLeft(180); setOtp('');
+      window.Swal?.fire({ icon:'success', title:'Account created!', text:'Scan the QR and enter the 6‑digit code to enable 2FA.', timer:2200, showConfirmButton:false });
+    } catch (err) { setMsg(err.message); }
   };
 
   const confirm2FA = async (e) => {
-    e?.preventDefault?.();
-    setMsg('');
+    e.preventDefault(); setMsg('');
     try {
       const res = await fetch('/api/auth/confirm-2fa', {
-        method: 'POST',
-        headers: {'Content-Type':'application/json', 'X-CSRF-Token': 'browser'},
-        credentials: 'include',
-        body: JSON.stringify({ token: confirmToken, otp }),
+        method:'POST', headers:{'Content-Type':'application/json','X-CSRF-Token':'browser'},
+        credentials:'include', body: JSON.stringify({ token: confirmToken, otp, remember: rememberMe })
       });
-      const data = await res.json().catch(async () => ({ error: (await res.text()).slice(0,200) }));
+      const data = await res.json().catch(async () => ({ error:(await res.text()).slice(0,200) }));
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      window.Swal?.fire({ icon:'success', title:'2FA enabled', text:'Welcome! Redirecting to your dashboard...', timer:1600, showConfirmButton:false });
+      window.Swal?.fire({ icon:'success', title:'2FA enabled', text:'Welcome! Redirecting...', timer:1400, showConfirmButton:false });
       setTimeout(()=> router.push('/dashboard'), 900);
-    } catch (err) {
-      setMsg(err.message);
-    }
+    } catch (err) { setMsg(err.message); }
   };
 
   const login = async (e) => {
     e.preventDefault(); setMsg('');
     try {
       const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: {'Content-Type':'application/json', 'X-CSRF-Token': 'browser'},
-        credentials: 'include',
-        body: JSON.stringify({ email, password, otp }),
+        method: 'POST', headers: {'Content-Type':'application/json','X-CSRF-Token':'browser'},
+        credentials: 'include', body: JSON.stringify({ email, password, otp, remember: rememberMe })
       });
-      const data = await res.json().catch(async () => ({ error: (await res.text()).slice(0,200) }));
-      if (res.status === 401 && data.need_otp) {
-        setMsg('Enter your 6‑digit code from the authenticator and submit again.');
-        return;
-      }
+      const data = await res.json().catch(async () => ({ error:(await res.text()).slice(0,200) }));
+      if (res.status === 401 && data.need_otp) { setMsg('Enter your 6‑digit code and submit again.'); return; }
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       window.Swal?.fire({ icon:'success', title:'Logged in', timer:1200, showConfirmButton:false });
       router.push('/dashboard');
@@ -549,12 +646,13 @@ export default function Login() {
       <div className="col-md-6 col-lg-5">
         <div className={cardClasses}>
           <div className="card-body p-4">
-            <h1 className="h3 mb-3 fw-bold">{mode === 'signup'
-              ? (signupStep === 'verify' ? 'Enable 2FA' : 'Sign up')
-              : 'Login'}</h1>
+            <h1 className="h3 mb-3 fw-bold">
+              {mode === 'signup' ? (signupStep === 'verify' ? 'Enable 2FA' : 'Sign up') : 'Login'}
+            </h1>
 
+            {/* SIGNUP FORM */}
             {mode === 'signup' && signupStep === 'form' && (
-              <form onSubmit={handleSignup} className="needs-validation" noValidate>
+              <form onSubmit={handleSignup} noValidate>
                 <div className="mb-3">
                   <label className="form-label">Email</label>
                   <input type="email" className="form-control" required value={email} onChange={e=>setEmail(e.target.value)} />
@@ -562,6 +660,10 @@ export default function Login() {
                 <div className="mb-3">
                   <label className="form-label">Password</label>
                   <input type="password" className="form-control" required value={password} onChange={e=>setPassword(e.target.value)} />
+                </div>
+                <div className="form-check form-switch mb-3">
+                  <input className="form-check-input" type="checkbox" id="remember1" checked={rememberMe} onChange={e=>setRememberMe(e.target.checked)} />
+                  <label className="form-check-label" htmlFor="remember1">Remember me (30 days)</label>
                 </div>
                 <button className="btn btn-primary w-100" type="submit">
                   <i className="fa-solid fa-user-plus me-2"></i>Create account
@@ -572,11 +674,12 @@ export default function Login() {
               </form>
             )}
 
+            {/* SIGNUP VERIFY */}
             {mode === 'signup' && signupStep === 'verify' && (
               <>
                 <div className="alert alert-info d-flex align-items-center" role="alert">
                   <i className="fa-solid fa-shield-halved me-2"></i>
-                  Scan the QR in Google Authenticator, 1Password, Authy, etc., then enter the current 6‑digit code.
+                  Scan the QR in your authenticator, then enter the current 6‑digit code.
                 </div>
                 <div className="text-center my-3">
                   {qr && <img alt="TOTP QR" src={qr} className="img-fluid rounded border" style={{maxWidth:260}} />}
@@ -599,6 +702,7 @@ export default function Login() {
               </>
             )}
 
+            {/* LOGIN */}
             {mode === 'login' && (
               <form onSubmit={login}>
                 <div className="mb-3">
@@ -612,6 +716,10 @@ export default function Login() {
                 <div className="mb-3">
                   <label className="form-label">OTP (if enabled)</label>
                   <input type="text" className="form-control" placeholder="123456" value={otp} onChange={e=>setOtp(e.target.value)} />
+                </div>
+                <div className="form-check form-switch mb-3">
+                  <input className="form-check-input" type="checkbox" id="remember2" checked={rememberMe} onChange={e=>setRememberMe(e.target.checked)} />
+                  <label className="form-check-label" htmlFor="remember2">Remember me (30 days)</label>
                 </div>
                 <button className="btn btn-primary w-100" type="submit">
                   <i className="fa-solid fa-right-to-bracket me-2"></i>Sign in
@@ -633,11 +741,15 @@ export default function Login() {
 }
 LOGIN
 
-  cat > "${APP_ROOT}/frontend/pages/dashboard.js" <<'DASH'
+
+    cat > "${APP_ROOT}/frontend/pages/dashboard.js" <<'DASH'
 import Link from 'next/link';
-import { useState } from 'react';
+import { useEffect } from 'react';
+import { useRouter } from 'next/router';
 
 export async function getServerSideProps(context) {
+  // Prevent caching of protected page
+  context.res.setHeader('Cache-Control', 'no-store');
   const cookie = context.req.headers.cookie || '';
   const res = await fetch('http://backend:5000/api/me', { headers: { cookie } });
   if (res.status === 401) return { redirect: { destination: '/login', permanent: false } };
@@ -653,7 +765,16 @@ export async function getServerSideProps(context) {
 }
 
 export default function Dashboard({ me, events, pg }) {
-  const [totp, setTotp] = useState(!!me.totp_enabled);
+  const router = useRouter();
+
+  // If user uses Back/Forward cache, re-validate auth and bounce to login if needed
+  useEffect(() => {
+    const onShow = () => {
+      fetch('/api/me', { credentials:'include' }).then(r => { if (r.status === 401) router.replace('/login'); });
+    };
+    window.addEventListener('pageshow', onShow);
+    return () => window.removeEventListener('pageshow', onShow);
+  }, [router]);
 
   const enable2FA = async () => {
     try {
@@ -680,8 +801,8 @@ export default function Dashboard({ me, events, pg }) {
       });
       const data2 = await res2.json();
       if (!res2.ok) throw new Error(data2.error || 'Invalid code');
-      setTotp(true);
       await window.Swal.fire({ icon:'success', title:'2FA enabled', timer:1400, showConfirmButton:false });
+      router.replace('/dashboard');
     } catch (e) {
       window.Swal.fire({ icon:'error', title:'Failed', text: e.message });
     }
@@ -702,11 +823,18 @@ export default function Dashboard({ me, events, pg }) {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed');
-      setTotp(false);
       await window.Swal.fire({ icon:'success', title:'2FA disabled', timer:1400, showConfirmButton:false });
-    } catch (e) {
-      window.Swal.fire({ icon:'error', title:'Failed', text: e.message });
-    }
+      router.replace('/dashboard');
+    } catch (e) { window.Swal.fire({ icon:'error', title:'Failed', text: e.message }); }
+  };
+
+  const downloadCSV = () => {
+    const rows = [['When (UTC)','IP','Success'], ...events.map(e => [e.at, e.ip, String(e.ok)])];
+    const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
+    const blob = new Blob([csv], {type:'text/csv'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = 'login-events.csv'; a.click();
+    URL.revokeObjectURL(url);
   };
 
   return (
@@ -715,10 +843,16 @@ export default function Dashboard({ me, events, pg }) {
         <div className="col-lg-8">
           <div className="card shadow-sm">
             <div className="card-body">
-              <h1 className="h4 mb-0">Welcome, {me.email}</h1>
+              <div className="d-flex justify-content-between align-items-center">
+                <h1 className="h4 mb-0">Welcome, {me.email}</h1>
+                <a className="btn btn-outline-secondary btn-sm" href="/"><i className="fa-solid fa-house me-1"></i> Home</a>
+              </div>
               <div className="text-muted">Live Postgres: v{pg.version || '—'} · {pg.now || '—'}</div>
               <hr/>
-              <h2 className="h5">Recent logins</h2>
+              <div className="d-flex justify-content-between align-items-center mb-2">
+                <h2 className="h5 mb-0">Recent logins</h2>
+                <button className="btn btn-sm btn-outline-dark" onClick={downloadCSV}><i className="fa-solid fa-file-arrow-down me-1"></i> CSV</button>
+              </div>
               <div className="table-responsive">
                 <table className="table table-sm align-middle">
                   <thead className="table-light"><tr><th>When (UTC)</th><th>IP</th><th>Success</th></tr></thead>
@@ -736,22 +870,20 @@ export default function Dashboard({ me, events, pg }) {
           <div className="card shadow-sm">
             <div className="card-body">
               <h2 className="h5 mb-3">Security Center</h2>
-              <div className="d-flex align-items-center mb-3">
-                <i className={`fa-solid ${totp ? 'fa-shield-halved text-success' : 'fa-shield text-secondary'} me-2`}></i>
-                <span>2FA: <b>{totp ? 'Enabled' : 'Disabled'}</b></span>
+              <div className="d-grid gap-2">
+                {me.totp_enabled ? (
+                  <button className="btn btn-outline-danger" onClick={disable2FA}>
+                    <i className="fa-solid fa-toggle-off me-2"></i>Disable 2FA
+                  </button>
+                ) : (
+                  <button className="btn btn-outline-primary" onClick={enable2FA}>
+                    <i className="fa-solid fa-toggle-on me-2"></i>Enable 2FA
+                  </button>
+                )}
+                <a className="btn btn-secondary" href="/logout"><i className="fa-solid fa-arrow-right-from-bracket me-2"></i>Logout</a>
               </div>
-              {totp ? (
-                <button className="btn btn-outline-danger w-100" onClick={disable2FA}>
-                  <i className="fa-solid fa-toggle-off me-2"></i>Disable 2FA
-                </button>
-              ) : (
-                <button className="btn btn-outline-primary w-100" onClick={enable2FA}>
-                  <i className="fa-solid fa-toggle-on me-2"></i>Enable 2FA
-                </button>
-              )}
               <hr/>
-              <a className="btn btn-secondary w-100" href="/api/auth/logout">Log out</a>
-              <p className="text-center mt-2"><Link href="/">Home</Link></p>
+              <p className="text-muted small mb-0">Sessions are HttpOnly, same-site, and rate limited. This page is delivered with <code>Cache-Control: no-store</code> so it won’t appear via the Back button after logout.</p>
             </div>
           </div>
         </div>
@@ -759,7 +891,6 @@ export default function Dashboard({ me, events, pg }) {
     </div>
   );
 }
-
 DASH
 
   cat > "${APP_ROOT}/frontend/Dockerfile" <<'DFE'
@@ -807,7 +938,7 @@ REQ
   # FIXED: removed invalid "u = ...; if not u: ..." one-liner; now proper multi-line.
   cat > "${APP_ROOT}/backend/app.py" <<'PY'
 import os, base64, json
-from datetime import datetime as dt
+from datetime import datetime as dt, timedelta, timezone
 from flask import Flask, request, jsonify, make_response, abort
 import psycopg2, psycopg2.extras
 from itsdangerous import URLSafeTimedSerializer, BadSignature
@@ -865,6 +996,14 @@ def init_db():
         """)
         conn.commit()
 
+@app.after_request
+def add_no_store(resp):
+    # Prevent back-button from serving cached dashboard/API responses
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Vary"] = "Cookie"
+    return resp
+
 @app.route("/healthz")
 def healthz():
     return "ok", 200
@@ -886,16 +1025,17 @@ def get_client_ip():
         ip = "0.0.0.0"
     return ip
 
-def set_session(user_id: int):
+def set_session(user_id: int, max_age_seconds: int = 12*3600):
     sid_raw = base64.urlsafe_b64encode(os.urandom(32)).decode().rstrip("=")
     sid = signer.dumps({"sid": sid_raw})
+    expires = dt.now(timezone.utc) + timedelta(seconds=max_age_seconds)
     with db() as conn, conn.cursor() as cur:
-        cur.execute("INSERT INTO sessions(sid, user_id, expires_at) VALUES(%s,%s, now()+ interval '12 hours')", (sid, user_id))
+        cur.execute("INSERT INTO sessions(sid, user_id, expires_at) VALUES(%s,%s,%s)", (sid, user_id, expires))
         conn.commit()
     resp = make_response(jsonify({"ok": True}))
-    resp.set_cookie(SESSION_COOKIE_NAME, sid, httponly=True, samesite="Strict", secure=COOKIE_SECURE, max_age=12*3600, path="/")
+    resp.set_cookie(SESSION_COOKIE_NAME, sid, httponly=True, samesite="Strict", secure=COOKIE_SECURE, max_age=max_age_seconds, path="/")
     csrf = csrf_signer.dumps({"ts": int(dt.utcnow().timestamp())})
-    resp.set_cookie("csrf", csrf, httponly=False, samesite="Strict", secure=COOKIE_SECURE, max_age=12*3600, path="/")
+    resp.set_cookie("csrf", csrf, httponly=False, samesite="Strict", secure=COOKIE_SECURE, max_age=max_age_seconds, path="/")
     return resp
 
 def clear_session():
@@ -945,9 +1085,8 @@ def require_csrf():
 @limiter.limit("20/hour")
 def signup():
     """
-    Create the user WITHOUT enabling 2FA yet.
-    Return a QR + a signed confirm_token (uid+secret).
-    The client will call /api/auth/confirm-2fa with the OTP to enable 2FA and create a session.
+    Create user WITHOUT enabling 2FA or creating a session.
+    Return a QR + signed confirm_token; client must POST /api/auth/confirm-2fa with OTP.
     """
     require_csrf()
     j = request.get_json(force=True)
@@ -960,7 +1099,6 @@ def signup():
         with db() as conn, conn.cursor() as cur:
             cur.execute("INSERT INTO users(email, passhash, totp_secret) VALUES(%s,%s,%s) RETURNING id", (email, pwhash, None))
             uid = cur.fetchone()["id"]; conn.commit()
-        # Generate TOTP secret but DO NOT store it yet
         secret = pyotp.random_base32()
         uri = pyotp.TOTP(secret).provisioning_uri(name=email, issuer_name="TriApp")
         img = qrcode.make(uri); buf = BytesIO(); img.save(buf, format="PNG")
@@ -973,15 +1111,16 @@ def signup():
 @app.post("/api/auth/confirm-2fa")
 @limiter.limit("40/hour")
 def confirm_2fa():
-    """Verify OTP for the provided confirm_token; on success, enable 2FA and start a session."""
+    """Verify OTP for confirm_token; on success, enable 2FA and start session."""
     require_csrf()
     j = request.get_json(force=True)
     token = j.get("token") or ""
     otp = (j.get("otp") or "").strip()
+    remember = bool(j.get("remember"))
     if not token or not otp:
         return jsonify({"error":"token and otp required"}), 400
     try:
-        payload = signer.loads(token, max_age=15*60)  # 15 minutes
+        payload = signer.loads(token, max_age=15*60)
     except BadSignature:
         return jsonify({"error":"invalid or expired token"}), 400
     if payload.get("purpose") != "setup2fa":
@@ -993,12 +1132,12 @@ def confirm_2fa():
         cur.execute("UPDATE users SET totp_secret=%s WHERE id=%s", (secret, uid)); conn.commit()
         cur.execute("SELECT email FROM users WHERE id=%s", (uid,)); email = cur.fetchone()["email"]
         cur.execute("INSERT INTO login_events(user_email, ip, ok) VALUES(%s,%s,%s)", (email, get_client_ip(), True)); conn.commit()
-    # Start session now
-    return set_session(uid)
+    max_age = 30*24*3600 if remember else 12*3600
+    return set_session(uid, max_age)
 
 @app.post("/api/auth/setup-2fa")
 def setup_2fa():
-    """For logged-in users: generate a new secret & QR, but do NOT enable until confirmed via /confirm-2fa."""
+    """For logged-in users: generate new secret & QR (not enabled until confirmed)."""
     require_csrf()
     u = current_user()
     if not u:
@@ -1035,6 +1174,7 @@ def login():
     email = (j.get("email") or "").strip().lower()
     pw = j.get("password") or ""
     otp = (j.get("otp") or "").strip()
+    remember = bool(j.get("remember"))
     if not email or not pw:
         return jsonify({"error":"email/password required"}), 400
     with db() as conn, conn.cursor() as cur:
@@ -1059,7 +1199,8 @@ def login():
             return jsonify({"error":"invalid otp"}), 401
     with db() as conn, conn.cursor() as cur:
         cur.execute("INSERT INTO login_events(user_email, ip, ok) VALUES(%s,%s,%s)", (email, get_client_ip(), True)); conn.commit()
-    return set_session(u["id"])
+    max_age = 30*24*3600 if remember else 12*3600
+    return set_session(u["id"], max_age)
 
 @app.get("/api/auth/logout")
 def logout():
