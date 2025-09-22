@@ -1,10 +1,7 @@
 #!/usr/bin/env bash
-# Idempotent tri-service app installer/manager with verbose diagnostics:
-#   - Next.js (frontend) public on :12000
-#   - Flask (backend)    internal only
-#   - Postgres (db)      internal only
-# Includes watcher to coordinate group stop/restart behavior.
-# Always prints actionable, verbose errors.
+# Idempotent tri-service app (Next.js + Flask + Postgres) with verbose diagnostics
+# Public: frontend on :12000  |  Internal only: backend<->db
+# Group control watcher included (stop any one -> stop all; restart main -> restart aux)
 
 set -Eeuo pipefail
 
@@ -12,6 +9,10 @@ set -Eeuo pipefail
 # Verbose error trap + diagnostics
 #############################################
 SCRIPT_NAME="$(basename "$0")"
+APP_ROOT="/opt/triapp"
+ENV_FILE="${APP_ROOT}/.env"
+COMPOSE_FILE="${APP_ROOT}/docker-compose.yml"
+
 on_err() {
   local exit_code=$?
   local line=${BASH_LINENO[0]:-0}
@@ -28,10 +29,12 @@ on_err() {
   if command -v docker >/dev/null 2>&1; then
     echo "    - Compose version: $($COMPOSE_BIN version 2>/dev/null || echo 'not found')"
   fi
+
   if [[ -f "$COMPOSE_FILE" ]]; then
     echo
     echo "    ► docker compose ps"
     $COMPOSE_BIN -f "$COMPOSE_FILE" ps || true
+
     echo
     echo "    ► docker compose config (first 120 lines)"
     $COMPOSE_BIN -f "$COMPOSE_FILE" config | sed -n '1,120p' || true
@@ -59,23 +62,33 @@ on_err() {
 
   echo
   echo "    ► Last 120 lines of DB logs (if any)"
-  if [[ -f "$COMPOSE_FILE" ]]; then
-    $COMPOSE_BIN -f "$COMPOSE_FILE" logs --tail=120 db || true
-  fi
+  [[ -f "$COMPOSE_FILE" ]] && $COMPOSE_BIN -f "$COMPOSE_FILE" logs --tail=120 db || true
+
+  echo
+  echo "    ► Last 120 lines of BACKEND logs (if any)"
+  [[ -f "$COMPOSE_FILE" ]] && $COMPOSE_BIN -f "$COMPOSE_FILE" logs --tail=120 backend || true
+
+  echo
+  echo "    ► Last 120 lines of FRONTEND logs (if any)"
+  [[ -f "$COMPOSE_FILE" ]] && $COMPOSE_BIN -f "$COMPOSE_FILE" logs --tail=120 frontend || true
 
   # Heuristic suggestions
   echo
   echo "[!] Suggested fixes:"
   if [[ -f "$COMPOSE_FILE" ]]; then
     db_logs="$($COMPOSE_BIN -f "$COMPOSE_FILE" logs --no-color --tail=500 db 2>/dev/null || true)"
+    be_logs="$($COMPOSE_BIN -f "$COMPOSE_FILE" logs --no-color --tail=200 backend 2>/dev/null || true)"
+
     if echo "$db_logs" | grep -qiE 'Operation not permitted|chown|setuid|setgid'; then
-      echo "    - Postgres failed with permissions/capabilities during init."
-      echo "      The script already avoids over-strict caps for DB. Re-run: sudo bash $SCRIPT_NAME up"
+      echo "    - Postgres init permissions/capabilities error. Script now avoids over-strict caps on DB."
+      echo "      Rerun: sudo bash $SCRIPT_NAME up"
     fi
-    if echo "$db_logs" | grep -qiE 'FATAL|database files are incompatible|initdb|could not create directory|permission denied|no space left on device'; then
-      echo "    - DB init error detected. Try:"
-      echo "        • Ensure disk space: df -h"
-      echo "        • Reset DB volume (DESTROYS DATA): sudo bash $SCRIPT_NAME destroy  &&  sudo bash $SCRIPT_NAME up"
+    if echo "$db_logs" | grep -qiE 'FATAL.*role.*root'; then
+      echo "    - DB healthcheck log about role 'root' is harmless (pg_isready probe)."
+    fi
+    if echo "$be_logs" | grep -qiE 'SyntaxError|Traceback'; then
+      echo "    - Backend Python error detected. Script now rewrites a correct backend/app.py."
+      echo "      If you customized it, check the lines around routes and rerun: sudo bash $SCRIPT_NAME up"
     fi
   fi
 
@@ -97,9 +110,6 @@ log()  { printf "[*] %s\n" "$*"; }
 warn() { printf "[!] %s\n" "$*" >&2; }
 die()  { printf "[x] %s\n" "$*" >&2; exit 1; }
 
-APP_ROOT="/opt/triapp"
-ENV_FILE="${APP_ROOT}/.env"
-COMPOSE_FILE="${APP_ROOT}/docker-compose.yml"
 WATCHER_SCRIPT="${APP_ROOT}/scripts/compose-watcher.sh"
 WATCHER_UNIT="/etc/systemd/system/triapp-watcher.service"
 DEFAULT_APP_NAME="triapp"
@@ -233,7 +243,7 @@ EOF
 # Compose + App files
 #############################################
 write_compose_file() {
-  # NOTE: DB service intentionally does NOT drop capabilities; init needs chown/setuid.
+  # DB keeps default capabilities (needed at init). Backend/Frontend drop caps.
   cat > "$COMPOSE_FILE" <<'YML'
 name: ${APP_NAME}
 services:
@@ -299,7 +309,7 @@ services:
     expose:
       - "5000"
 
-    db:
+  db:
     image: postgres:16-alpine
     environment:
       - POSTGRES_DB=${POSTGRES_DB}
@@ -310,25 +320,18 @@ services:
       - ./db/init.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
     restart: unless-stopped
     healthcheck:
+      # Credential-agnostic server readiness
       test: ["CMD-SHELL", "pg_isready -q -h 127.0.0.1 -p 5432 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 30
-    # allow what Postgres init needs
-    cap_add:
-      - CHOWN
-      - SETUID
-      - SETGID
-      - FOWNER
-      - DAC_OVERRIDE
-    read_only: false
     networks:
       - db_net
     expose:
       - "5432"
 
 networks:
-  web_net: {}            # public-facing for frontend
+  web_net: {}            # public-facing for frontend only
   app_net:
     internal: true       # frontend <-> backend only
   db_net:
@@ -542,6 +545,7 @@ Flask-Limiter==3.7.0
 gunicorn==21.2.0
 REQ
 
+  # FIXED: removed invalid "u = ...; if not u: ..." one-liner; now proper multi-line.
   cat > "${APP_ROOT}/backend/app.py" <<'PY'
 import os, base64, json
 from datetime import datetime as dt
@@ -602,14 +606,17 @@ def init_db():
         """)
         conn.commit()
 
-@app.route("/healthz") 
-def healthz(): return "ok", 200
+@app.route("/healthz")
+def healthz():
+    return "ok", 200
 
 def get_client_ip():
     fwd = request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
     ip = fwd or request.remote_addr or "0.0.0.0"
-    try: ip_address(ip)
-    except Exception: ip = "0.0.0.0"
+    try:
+        ip_address(ip)
+    except Exception:
+        ip = "0.0.0.0"
     return ip
 
 def set_session(user_id: int):
@@ -637,15 +644,19 @@ def clear_session():
 
 def current_user():
     sid = request.cookies.get(SESSION_COOKIE_NAME)
-    if not sid: return None
-    try: signer.loads(sid, max_age=60*60*24*2)
-    except BadSignature: return None
+    if not sid:
+        return None
+    try:
+        signer.loads(sid, max_age=60*60*24*2)
+    except BadSignature:
+        return None
     with db() as conn, conn.cursor() as cur:
         cur.execute("""SELECT u.id, u.email, u.totp_secret,
                               (SELECT count(*) FROM sessions s2 WHERE s2.user_id = u.id) AS active_sessions
                        FROM users u JOIN sessions s ON s.user_id=u.id WHERE s.sid=%s""", (sid,))
         row = cur.fetchone()
-        if not row: return None
+        if not row:
+            return None
         cur.execute("UPDATE sessions SET last_seen=now() WHERE sid=%s", (sid,))
         conn.commit()
         return row
@@ -653,12 +664,14 @@ def current_user():
 def require_csrf():
     token = request.headers.get("X-CSRF-Token","")
     csrf_cookie = request.cookies.get("csrf","")
-    try: csrf_signer.loads(csrf_cookie, max_age=12*3600)
-    except BadSignature: abort(403)
-    if token != "browser": abort(403)
+    try:
+        csrf_signer.loads(csrf_cookie, max_age=12*3600)
+    except BadSignature:
+        abort(403)
+    if token != "browser":
+        abort(403)
     return True
 
-from flask import abort
 @app.post("/api/auth/signup")
 @limiter.limit("20/hour")
 def signup():
@@ -666,9 +679,9 @@ def signup():
     j = request.get_json(force=True)
     email = (j.get("email") or "").strip().lower()
     pw = j.get("password") or ""
-    if not email or not pw: return jsonify({"error":"email/password required"}), 400
+    if not email or not pw:
+        return jsonify({"error":"email/password required"}), 400
     try:
-        from argon2 import PasswordHasher; ph = PasswordHasher()
         pwhash = ph.hash(pw)
         secret = pyotp.random_base32()
         with db() as conn, conn.cursor() as cur:
@@ -693,7 +706,8 @@ def login():
     email = (j.get("email") or "").strip().lower()
     pw = j.get("password") or ""
     otp = (j.get("otp") or "").strip()
-    if not email or not pw: return jsonify({"error":"email/password required"}), 400
+    if not email or not pw:
+        return jsonify({"error":"email/password required"}), 400
     with db() as conn, conn.cursor() as cur:
         cur.execute("SELECT id, passhash, totp_secret FROM users WHERE email=%s", (email,))
         u = cur.fetchone()
@@ -702,14 +716,14 @@ def login():
             cur.execute("INSERT INTO login_events(user_email, ip, ok) VALUES(%s,%s,%s)", (email, get_client_ip(), False)); conn.commit()
         return jsonify({"error":"invalid credentials"}), 401
     try:
-        from argon2.exceptions import VerifyMismatchError
         ph.verify(u["passhash"], pw)
     except Exception:
         with db() as conn, conn.cursor() as cur:
             cur.execute("INSERT INTO login_events(user_email, ip, ok) VALUES(%s,%s,%s)", (email, get_client_ip(), False)); conn.commit()
         return jsonify({"error":"invalid credentials"}), 401
     if u["totp_secret"]:
-        if not otp: return jsonify({"need_otp": True}), 401
+        if not otp:
+            return jsonify({"need_otp": True}), 401
         if not pyotp.TOTP(u["totp_secret"]).verify(otp, valid_window=1):
             with db() as conn, conn.cursor() as cur:
                 cur.execute("INSERT INTO login_events(user_email, ip, ok) VALUES(%s,%s,%s)", (email, get_client_ip(), False)); conn.commit()
@@ -719,27 +733,33 @@ def login():
     return set_session(u["id"])
 
 @app.get("/api/auth/logout")
-def logout(): return clear_session()
+def logout():
+    return clear_session()
 
 @app.get("/api/me")
 def me():
     u = current_user()
-    if not u: return jsonify({"error": "unauthorized"}), 401
+    if not u:
+        return jsonify({"error": "unauthorized"}), 401
     return jsonify({"email": u["email"], "totp_enabled": bool(u["totp_secret"]), "active_sessions": int(u["active_sessions"])})
 
 @app.get("/api/login-events")
 def login_events():
     u = current_user()
-    if not u: return jsonify([]), 401
+    if not u:
+        return jsonify([]), 401
     with db() as conn, conn.cursor() as cur:
         cur.execute("SELECT to_char(at AT TIME ZONE 'UTC','YYYY-MM-DD HH24:MI:SS') as at, host(ip) as ip, ok FROM login_events WHERE user_email=%s ORDER BY id DESC LIMIT 25", (u["email"],))
         return jsonify(cur.fetchall())
 
 @app.get("/api/pg-info")
 def pg_info():
-    u = current_user(); if not u: return jsonify({}), 401
+    u = current_user()
+    if not u:
+        return jsonify({}), 401
     with db() as conn, conn.cursor() as cur:
-        cur.execute("SELECT version(), now()"); r = cur.fetchone()
+        cur.execute("SELECT version(), now()")
+        r = cur.fetchone()
         return jsonify({"version": r["version"], "now": str(r["now"])})
 
 if __name__ == "__main__":
@@ -869,8 +889,18 @@ compose_up() {
 
   echo "[*] Waiting for database to become healthy..."
   if wait_for_health "db" 180; then
-    echo "[*] DB healthy. Ensuring all services are up..."
-    ( cd "$APP_ROOT" && $COMPOSE_BIN up -d || true )
+    echo "[*] DB healthy. Ensuring backend becomes healthy..."
+    ( cd "$APP_ROOT" && $COMPOSE_BIN up -d backend || true )
+    if wait_for_health "backend" 240; then
+      echo "[*] Backend healthy. Bringing up frontend..."
+      ( cd "$APP_ROOT" && $COMPOSE_BIN up -d frontend || true )
+    else
+      echo
+      echo "[x] Backend did NOT become healthy within timeout."
+      echo "    ► Show last 200 lines of BACKEND logs:"
+      ( cd "$APP_ROOT" && $COMPOSE_BIN logs --tail=200 backend || true )
+      die "Backend unhealthy."
+    fi
   else
     echo
     echo "[x] Database did NOT become healthy within timeout."
@@ -878,9 +908,7 @@ compose_up() {
     ( cd "$APP_ROOT" && $COMPOSE_BIN logs --tail=200 db || true )
     echo
     echo "[!] Common causes & fixes:"
-    echo "    - Permissions/capabilities during init → already fixed in this script (no cap_drop/user on DB)."
-    echo "      Rerun: sudo bash ${SCRIPT_NAME} up"
-    echo "    - Disk space or leftover corrupted volume:"
+    echo "    - Disk space or corrupted volume:"
     echo "        df -h"
     echo "        sudo bash ${SCRIPT_NAME} destroy   # WARNING: deletes DB data"
     echo "        sudo bash ${SCRIPT_NAME} up"
@@ -907,10 +935,10 @@ compose_destroy() {
   if [[ -f "$COMPOSE_FILE" ]]; then
     ( cd "$APP_ROOT" && $COMPOSE_BIN down -v --remove-orphans || true )
   fi
-  # Try both generic and project-prefixed volume names (idempotent)
+  # Remove both common volume name patterns (idempotent)
   docker volume rm -f triapp_triapp_db >/dev/null 2>&1 || true
   if [[ -f "$ENV_FILE" ]]; then
-    appn="$(grep -E '^APP_NAME=' "$ENV_FILE" | cut -d= -f2- || echo "$DEFAULT_APP_NAME")"
+    appn="$(grep -E '^APP_NAME=' "$ENV_FILE" | cut -d= -f2- || echo "triapp")"
     docker volume rm -f "${appn}_triapp_db" >/dev/null 2>&1 || true
   fi
   rm -rf "$APP_ROOT"
@@ -930,14 +958,18 @@ menu() {
   echo -n "Choose: "
 }
 
-main_up() {
-  ensure_prereqs
+write_all() {
   mkdir -p "$APP_ROOT"
   write_env_file
   write_compose_file
   write_frontend
   write_backend
   write_db_seed
+}
+
+main_up() {
+  ensure_prereqs
+  write_all
   compose_up
   write_watcher
 
@@ -953,11 +985,11 @@ main_up() {
   echo "==============================================="
 
   echo
-  echo "[*] Post-run status (for your records):"
+  echo "[*] Post-run status:"
   $COMPOSE_BIN -f "$COMPOSE_FILE" ps || true
 }
 
-main_stop()    { ensure_prereqs; compose_stop; }
+main_stop()    { ensure_prereqs; ( [[ -f "$COMPOSE_FILE" ]] && $COMPOSE_BIN -f "$COMPOSE_FILE" stop ) || warn "Nothing to stop"; }
 main_destroy() { ensure_prereqs; compose_destroy; }
 
 #############################################
