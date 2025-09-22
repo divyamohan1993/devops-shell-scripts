@@ -561,8 +561,6 @@ NGX
 EOF
  
 
-
-
   # Validate and reload Nginx; restore on failure
   if ! sudo nginx -t; then
     warn "nginx -t failed; reverting Nginx site changes."
