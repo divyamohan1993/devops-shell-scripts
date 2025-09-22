@@ -550,7 +550,11 @@ ${ALLOW_LINES}    deny all;
 NGX
 
   # Ensure global rate limit zone exists (respect RATE)
-  sudo bash -c "grep -q 'limit_req_zone' '$NGX_CONF' || sed -i \"1i limit_req_zone \\$binary_remote_addr zone=reqs:10m rate=${RATE};\" '$NGX_CONF'"
+  # IMPORTANT: escape $binary_remote_addr so Bash doesn't expand it; it's an Nginx var.
+  if ! sudo grep -q 'limit_req_zone' "$NGX_CONF"; then
+    sudo sed -i "1i limit_req_zone \$binary_remote_addr zone=reqs:10m rate=${RATE};" "$NGX_CONF"
+  fi
+
 
   # Validate and reload Nginx; restore on failure
   if ! sudo nginx -t; then
