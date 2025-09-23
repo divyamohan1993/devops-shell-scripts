@@ -1,1 +1,0 @@
-# Provide mysql_vars.json input to conftest. This is a placeholder for CI.
