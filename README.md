@@ -39,7 +39,6 @@
 
 If you want practical reps, fast feedback, and fewer gotchas then this is for you.
 
----
 
 ## Who it’s for
 
@@ -47,7 +46,6 @@ If you want practical reps, fast feedback, and fewer gotchas then this is for yo
 - Developers moving toward DevOps/SRE and looking for **sane, repeatable** scripts.  
 - Busy pros who want **small labs** to demo an idea before committing infra time.
 
----
 
 ## What’s inside (high‑level map)
 
@@ -61,8 +59,6 @@ If you want practical reps, fast feedback, and fewer gotchas then this is for yo
 - `autoscalling-loadbalancing-demo/` — scaling & LB demo scripts  
 
 > Everything is designed to run in an **isolated environment** (container or throwaway VM) first. Start small, break safely, then harden.
-
----
 
 ## Quick start (5–10 minutes)
 
@@ -89,7 +85,6 @@ checkov -d ./iac
 
 > Tip: Prefer containers or a disposable VM. Never run unreviewed scripts on production systems.
 
----
 
 ## Learning objectives
 
@@ -98,32 +93,6 @@ checkov -d ./iac
 * Wire **CI** with quality/security gates (lint, secret scans).
 * Manage **IaC** choices and environment promotion.
 * Add **observability**: metrics, dashboards, and basic alerts.
-
----
-
-## Table of Contents
-
-1. **Overview & Scope**
-
-   * [Introduction](#introduction)
-   * [Learning Objectives](#learning-objectives)
-   * [Methodology & Lab Format](#methodology--lab-format)
-   * [Environment & Prerequisites](#environment--prerequisites)
-   * [Repository Structure](#repository-structure)
-   * [How to Use This Repository](#how-to-use-this-repository)
-
-2. **Hands-on Materials**
-
-   * [Quick start](#quick-start)
-   * [DevOps — Top 10 Daily Things & the Tools You’ll See](#devops--top-10-daily-things--the-tools-youll-see)
-   * [DevSecOps — Top 10 Daily Things & the Tools You’ll See](#devsecops--top-10-daily-things--the-tools-youll-see)
-
-3. **Policy & Credits**
-
-   * [Notes, Credits & Responsible Use](#notes-credits--responsible-use)
-   * License & Trademarks (see **LICENSE**)
-
----
 
 ## Why DevOps
 
@@ -195,7 +164,6 @@ This course emphasizes the outcomes DevOps enables: repeatable builds, safe rele
 10. **Vulnerability management & SIEM/SOAR**
     Tools: Tenable Nessus, Qualys, Defender for Cloud; SIEMs: Splunk, Sentinel.
 
----
 
 ## Notes, Credits & Responsible Use
 
