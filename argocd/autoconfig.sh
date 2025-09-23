@@ -1,149 +1,349 @@
-#!/usr/bin/env bash
-# autoinstall.sh — Install k3s + Argo CD and expose Argo CD on external port 13243 (GCE Ubuntu)
-# Idempotent, debug-friendly, minimal assumptions about the host.
-set -Eeuo pipefail
+#!/bin/bash
 
-# ===== Config =====
-: "${DEBUG:=1}"                 # 1=verbose bash xtrace, 0=quiet
-: "${ARGOCD_NS:=argocd}"
-: "${EXPOSE_PORT:=13243}"       # external port on VM
-: "${ARGOCD_MANIFEST_URL:=https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml}"
-: "${TIMEOUT:=600}"             # seconds to wait for components
-: "${KUBECONFIG:=/etc/rancher/k3s/k3s.yaml}"
-export KUBECONFIG
+# ArgoCD Installation Script for Ubuntu on GCP VM
+# This script installs ArgoCD on port 8090 (since 8080 is busy)
+# and configures it for external access
+# Usage: ./install-argocd.sh [install|uninstall|reinstall]
 
-[[ "${DEBUG}" == "1" ]] && set -x
+set -e
 
-# ===== Helpers =====
-log()  { printf "\n[%s] %s\n" "$(date +'%F %T')" "$*" >&2; }
-die()  { printf "\n[ERROR] %s\n" "$*" >&2; exit 1; }
-need() { command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"; }
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
 
-SUDO="" ; [[ $EUID -ne 0 ]] && SUDO="sudo"
+# Configuration
+ARGOCD_VERSION="v2.9.3"  # Latest stable version as of script creation
+ARGOCD_PORT=8090         # Using 8090 since 8080 is busy
+ARGOCD_NAMESPACE="argocd"
+KIND_CLUSTER_NAME="kind"
 
-trap 'rc=$?; [[ $rc -ne 0 ]] && echo "[FATAL] Script failed (exit $rc)." >&2' EXIT
+# Get command line argument
+ACTION=${1:-install}
 
-# Return first non-empty value
-first_nonempty() { for v in "$@"; do [[ -n "${v:-}" ]] && { echo "$v"; return 0; }; done; }
+# Function to print status
+print_status() {
+    echo -e "${YELLOW}[INFO]${NC} $1"
+}
 
-# ===== System prep =====
-log "Updating apt and installing prerequisites..."
-$SUDO apt-get update -y
-$SUDO DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-  ca-certificates curl jq apt-transport-https gnupg lsb-release
+print_success() {
+    echo -e "${GREEN}[SUCCESS]${NC} $1"
+}
 
-need curl
-need jq
+print_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
 
-# ===== k3s install (idempotent) =====
-if ! command -v k3s >/dev/null 2>&1; then
-  log "Installing k3s (lightweight Kubernetes)..."
-  # k3s bundles containerd, flannel CNI, Traefik (80/443), and ServiceLB (Klipper LB).
-  curl -sfL https://get.k3s.io | $SUDO sh -s - --write-kubeconfig-mode 0644
-else
-  log "k3s already installed. Ensuring service is running..."
-  $SUDO systemctl enable --now k3s
-fi
+print_header() {
+    echo -e "${BLUE}================================${NC}"
+    echo -e "${BLUE}$1${NC}"
+    echo -e "${BLUE}================================${NC}"
+}
 
-# ensure kubectl available (k3s installs a kubectl symlink)
-if ! command -v kubectl >/dev/null 2>&1; then
-  log "Ensuring kubectl symlink present..."
-  $SUDO ln -sf /usr/local/bin/k3s /usr/local/bin/kubectl || true
-fi
-need kubectl
+# Function to show usage
+show_usage() {
+    echo "Usage: $0 [install|uninstall|reinstall]"
+    echo ""
+    echo "Commands:"
+    echo "  install    - Install ArgoCD (default)"
+    echo "  uninstall  - Uninstall ArgoCD and cleanup"
+    echo "  reinstall  - Uninstall and then install ArgoCD"
+    echo ""
+}
 
-# allow current user to read kubeconfig
-$SUDO chmod 0644 "$KUBECONFIG" || true
+# Function to check if ArgoCD is installed
+check_argocd_installation() {
+    local installed=false
+    
+    # Check if ArgoCD namespace exists
+    if kubectl get namespace ${ARGOCD_NAMESPACE} &>/dev/null; then
+        print_status "ArgoCD namespace exists"
+        installed=true
+    fi
+    
+    # Check if kind cluster exists
+    if command -v kind &>/dev/null && kind get clusters 2>/dev/null | grep -q "^${KIND_CLUSTER_NAME}$"; then
+        print_status "Kind cluster '${KIND_CLUSTER_NAME}' exists"
+        installed=true
+    fi
+    
+    return $([ "$installed" = true ] && echo 0 || echo 1)
+}
 
-log "Waiting for k3s node to be Ready..."
-kubectl wait --for=condition=Ready node --all --timeout="${TIMEOUT}s" || \
-  die "k3s node did not become Ready in ${TIMEOUT}s"
+# Function to uninstall ArgoCD
+uninstall_argocd() {
+    print_header "🗑️  Uninstalling ArgoCD"
+    
+    # Stop any port forwarding processes
+    print_status "Stopping any port-forward processes..."
+    pkill -f "kubectl.*port-forward.*argocd" 2>/dev/null || true
+    
+    # Delete ArgoCD namespace and resources
+    if kubectl get namespace ${ARGOCD_NAMESPACE} &>/dev/null; then
+        print_status "Deleting ArgoCD namespace and all resources..."
+        kubectl delete namespace ${ARGOCD_NAMESPACE} --timeout=300s
+        print_success "ArgoCD namespace deleted"
+    else
+        print_status "ArgoCD namespace not found"
+    fi
+    
+    # Delete kind cluster
+    if command -v kind &>/dev/null && kind get clusters 2>/dev/null | grep -q "^${KIND_CLUSTER_NAME}$"; then
+        print_status "Deleting kind cluster..."
+        kind delete cluster --name ${KIND_CLUSTER_NAME}
+        print_success "Kind cluster deleted"
+    else
+        print_status "Kind cluster not found"
+    fi
+    
+    # Remove GCP firewall rule if exists
+    if command -v gcloud &>/dev/null; then
+        print_status "Removing GCP firewall rule..."
+        gcloud compute firewall-rules delete allow-argocd-${ARGOCD_PORT} --quiet 2>/dev/null || print_status "Firewall rule not found or already deleted"
+    fi
+    
+    # Clean up credential files
+    if [ -f "argocd-credentials.txt" ]; then
+        rm -f argocd-credentials.txt
+        print_status "Removed credential file"
+    fi
+    
+    # Remove Docker containers if any are running
+    print_status "Cleaning up any remaining Docker containers..."
+    docker ps -a --filter "label=io.x-k8s.kind.cluster=${KIND_CLUSTER_NAME}" --format "{{.ID}}" | xargs -r docker rm -f 2>/dev/null || true
+    
+    print_success "ArgoCD uninstallation completed!"
+}
 
-# ===== Argo CD install (idempotent) =====
-log "Creating namespace '${ARGOCD_NS}' (idempotent)..."
-kubectl create namespace "${ARGOCD_NS}" --dry-run=client -o yaml | kubectl apply -f -
+# Main installation function
+install_argocd() {
+    print_header "🚀 Starting ArgoCD installation on Ubuntu"
 
-log "Applying Argo CD install manifest..."
-kubectl apply -n "${ARGOCD_NS}" -f "${ARGOCD_MANIFEST_URL}"
+    # Check if running as root or with sudo
+    if [[ $EUID -eq 0 ]]; then
+       print_error "This script should not be run as root. Please run as a regular user with sudo privileges."
+       exit 1
+    fi
 
-log "Waiting for Argo CD server Deployment to be Available..."
-kubectl -n "${ARGOCD_NS}" rollout status deploy/argocd-server --timeout="${TIMEOUT}s"
+    # Update system packages
+    print_status "Updating system packages..."
+    sudo apt update && sudo apt upgrade -y
 
-# ===== Expose Argo CD on EXPOSE_PORT via k3s ServiceLB (hostPort) =====
-# We replace the Service ports to avoid conflicts with Traefik's 80/443.
-log "Patching 'argocd-server' Service to type=LoadBalancer on port ${EXPOSE_PORT}..."
-if kubectl -n "${ARGOCD_NS}" get svc argocd-server >/dev/null 2>&1; then
-  current_ports="$(kubectl -n "${ARGOCD_NS}" get svc argocd-server -o jsonpath='{.spec.ports[*].port}' || true)"
-  svc_type="$(kubectl -n "${ARGOCD_NS}" get svc argocd-server -o jsonpath='{.spec.type}' || true)"
-  need_patch="no"
-  [[ "${svc_type}" != "LoadBalancer" ]] && need_patch="yes"
-  grep -q -w "${EXPOSE_PORT}" <<<"${current_ports:-}" || need_patch="yes"
+    # Install required dependencies
+    print_status "Installing required dependencies..."
+    sudo apt install -y curl wget apt-transport-https ca-certificates gnupg lsb-release
 
-  if [[ "${need_patch}" == "yes" ]]; then
-    # JSONPatch fully replaces the ports list with a single port to avoid 80/443 conflicts.
-    patch_json=$(jq -n --argjson port "${EXPOSE_PORT}" '[{"op":"replace","path":"/spec/type","value":"LoadBalancer"}, {"op":"replace","path":"/spec/ports","value":[{"name":"https-'"${EXPOSE_PORT}"'","protocol":"TCP","port":'"${EXPOSE_PORT}"',"targetPort":8080}]}]')
-    kubectl -n "${ARGOCD_NS}" patch svc argocd-server --type=json -p "${patch_json}"
-  else
-    log "Service already exposed as LoadBalancer on port ${EXPOSE_PORT}."
-  fi
-else
-  die "Service argocd-server not found; install may have failed."
-fi
+    # Install Docker if not already installed
+    if ! command -v docker &> /dev/null; then
+        print_status "Installing Docker..."
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+        sudo apt update
+        sudo apt install -y docker-ce docker-ce-cli containerd.io
+        sudo usermod -aG docker $USER
+        print_success "Docker installed successfully"
+    else
+        print_success "Docker is already installed"
+    fi
 
-# Wait until ServiceLB assigns an ingress IP (k3s will use node external IP)
-log "Waiting for LoadBalancer ingress IP on argocd-server Service..."
-SECS=0
-ARGOCD_IP=""
-while [[ $SECS -lt $TIMEOUT ]]; do
-  ARGOCD_IP="$(kubectl -n "${ARGOCD_NS}" get svc argocd-server -o jsonpath='{.status.loadBalancer.ingress[0].ip}' || true)"
-  [[ -n "${ARGOCD_IP}" ]] && break
-  sleep 3; SECS=$((SECS+3))
-done
-[[ -z "${ARGOCD_IP}" ]] && log "No LB IP reported yet; will fall back to VM external IP."
+    # Install kubectl if not already installed
+    if ! command -v kubectl &> /dev/null; then
+        print_status "Installing kubectl..."
+        curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/kubernetes-archive-keyring.gpg
+        echo "deb [signed-by=/usr/share/keyrings/kubernetes-archive-keyring.gpg] https://apt.kubernetes.io/ kubernetes-xenial main" | sudo tee /etc/apt/sources.list.d/kubernetes.list
+        sudo apt update
+        sudo apt install -y kubectl
+        print_success "kubectl installed successfully"
+    else
+        print_success "kubectl is already installed"
+    fi
 
-# ===== Open instance firewall if UFW is active (GCE VPC firewall must also allow this port) =====
-if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
-  log "UFW is active — allowing tcp/${EXPOSE_PORT}..."
-  $SUDO ufw allow "${EXPOSE_PORT}/tcp" || true
-else
-  log "UFW inactive or not installed — skipping UFW changes (GCE VPC firewall controls external access)."
-fi
+    # Install kind (Kubernetes in Docker) for local cluster
+    if ! command -v kind &> /dev/null; then
+        print_status "Installing kind (Kubernetes in Docker)..."
+        curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-amd64
+        chmod +x ./kind
+        sudo mv ./kind /usr/local/bin/kind
+        print_success "kind installed successfully"
+    else
+        print_success "kind is already installed"
+    fi
 
-# ===== Discover external IPs =====
-log "Discovering GCE external IP..."
-GCE_IP="$(curl -sfH 'Metadata-Flavor: Google' \
-  'http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip' || true)"
-EXTERNAL_IP="$(first_nonempty "${ARGOCD_IP}" "${GCE_IP}")"
+    # Create kind cluster if it doesn't exist
+    print_status "Checking for existing kind cluster..."
+    if ! kind get clusters | grep -q "kind"; then
+        print_status "Creating kind cluster with port mapping..."
+        cat <<EOF > kind-config.yaml
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+- role: control-plane
+  kubeadmConfigPatches:
+  - |
+    kind: InitConfiguration
+    nodeRegistration:
+      kubeletExtraArgs:
+        node-labels: "ingress-ready=true"
+  extraPortMappings:
+  - containerPort: 30080
+    hostPort: ${ARGOCD_PORT}
+    protocol: TCP
+EOF
+        
+        kind create cluster --config=kind-config.yaml
+        rm kind-config.yaml
+        print_success "kind cluster created successfully"
+    else
+        print_success "kind cluster already exists"
+    fi
 
-# ===== Fetch initial admin password (if still present) =====
-# Official default admin user is 'admin'; initial password stored in argocd-initial-admin-secret.
-INIT_PASS=""
-if kubectl -n "${ARGOCD_NS}" get secret argocd-initial-admin-secret >/dev/null 2>&1; then
-  INIT_PASS="$(kubectl -n "${ARGOCD_NS}" get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d || true)"
-fi
+    # Wait for cluster to be ready
+    print_status "Waiting for cluster to be ready..."
+    kubectl cluster-info --context kind-kind
+    kubectl wait --for=condition=Ready nodes --all --timeout=300s
 
-# ===== Output =====
-echo ""
-echo "====================== SUCCESS ======================"
-echo "Argo CD is installed and exposed on: https://${EXTERNAL_IP:-<external-ip>}:${EXPOSE_PORT}"
-echo ""
-echo "If you point DNS A record 'argocd.dmj.one' -> ${GCE_IP:-<external-ip>}, you'll reach:"
-echo "  https://argocd.dmj.one:${EXPOSE_PORT}"
-echo ""
-echo "Login:"
-echo "  Username: admin"
-if [[ -n "${INIT_PASS}" ]]; then
-  echo "  Password: ${INIT_PASS}"
-else
-  echo "  Password: <not retrieved>"
-  echo "    (The 'argocd-initial-admin-secret' may have been deleted or rotated.)"
-  echo "    To fetch later: kubectl -n ${ARGOCD_NS} get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d; echo"
-fi
-echo ""
-echo "kubectl context:"
-echo "  KUBECONFIG=${KUBECONFIG}"
-echo ""
-echo "Notes:"
-echo "  • Ensure your GCE VPC firewall allows ingress tcp/${EXPOSE_PORT} to this VM."
-echo "  • TLS is Argo CD's default (self-signed). Browser will warn unless you add a valid cert."
-echo "====================================================="
+    # Create ArgoCD namespace
+    print_status "Creating ArgoCD namespace..."
+    kubectl create namespace ${ARGOCD_NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
+
+    # Install ArgoCD
+    print_status "Installing ArgoCD ${ARGOCD_VERSION}..."
+    kubectl apply -n ${ARGOCD_NAMESPACE} -f https://raw.githubusercontent.com/argoproj/argo-cd/${ARGOCD_VERSION}/manifests/install.yaml
+
+    # Wait for ArgoCD pods to be ready
+    print_status "Waiting for ArgoCD pods to be ready (this may take a few minutes)..."
+    kubectl wait --for=condition=available --timeout=600s deployment/argocd-server -n ${ARGOCD_NAMESPACE}
+    kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=argocd-server -n ${ARGOCD_NAMESPACE} --timeout=600s
+
+    # Patch ArgoCD server service to use NodePort
+    print_status "Configuring ArgoCD server for external access..."
+    kubectl patch svc argocd-server -n ${ARGOCD_NAMESPACE} -p '{"spec":{"type":"NodePort","ports":[{"port":80,"targetPort":8080,"nodePort":30080}]}}'
+
+    # Configure ArgoCD server to accept insecure connections (for HTTP access)
+    kubectl patch configmap argocd-cmd-params-cm -n ${ARGOCD_NAMESPACE} --patch '{"data":{"server.insecure":"true"}}'
+
+    # Restart ArgoCD server to apply changes
+    kubectl rollout restart deployment argocd-server -n ${ARGOCD_NAMESPACE}
+    kubectl rollout status deployment argocd-server -n ${ARGOCD_NAMESPACE}
+
+    # Get initial admin password
+    print_status "Retrieving ArgoCD admin password..."
+    ARGOCD_PASSWORD=$(kubectl -n ${ARGOCD_NAMESPACE} get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d)
+
+    # Get VM's public IP
+    print_status "Retrieving VM public IP..."
+    PUBLIC_IP=$(curl -s ifconfig.me)
+
+    # Configure firewall rule for GCP (if gcloud is available)
+    if command -v gcloud &> /dev/null; then
+        print_status "Configuring GCP firewall rule for ArgoCD..."
+        gcloud compute firewall-rules create allow-argocd-${ARGOCD_PORT} \
+            --allow tcp:${ARGOCD_PORT} \
+            --source-ranges 0.0.0.0/0 \
+            --description "Allow ArgoCD access on port ${ARGOCD_PORT}" \
+            2>/dev/null || print_status "Firewall rule may already exist or gcloud not configured"
+    else
+        print_status "gcloud CLI not found. Please manually configure GCP firewall:"
+        echo "  - Rule name: allow-argocd-${ARGOCD_PORT}"
+        echo "  - Direction: Ingress"
+        echo "  - Action: Allow"
+        echo "  - Targets: All instances in network"
+        echo "  - Source IP ranges: 0.0.0.0/0"
+        echo "  - Protocols and ports: TCP ${ARGOCD_PORT}"
+    fi
+
+    # Create ArgoCD CLI alias for convenience
+    print_status "Setting up ArgoCD CLI..."
+    if ! command -v argocd &> /dev/null; then
+        curl -sSL -o argocd-linux-amd64 https://github.com/argoproj/argo-cd/releases/download/${ARGOCD_VERSION}/argocd-linux-amd64
+        sudo install -m 555 argocd-linux-amd64 /usr/local/bin/argocd
+        rm argocd-linux-amd64
+        print_success "ArgoCD CLI installed successfully"
+    fi
+
+    print_success "ArgoCD installation completed successfully!"
+
+    echo ""
+    echo "=================================="
+    echo "🚀 ArgoCD Access Information"
+    echo "=================================="
+    echo ""
+    echo "📍 ArgoCD URL: http://${PUBLIC_IP}:${ARGOCD_PORT}"
+    echo "👤 Username: admin"
+    echo "🔑 Password: ${ARGOCD_PASSWORD}"
+    echo ""
+    echo "💡 Additional Commands:"
+    echo "  - Access ArgoCD locally: kubectl port-forward svc/argocd-server -n argocd 8090:80"
+    echo "  - Change admin password: argocd account update-password"
+    echo "  - Get pods status: kubectl get pods -n argocd"
+    echo ""
+    echo "🔧 Troubleshooting:"
+    echo "  - Check ArgoCD status: kubectl get all -n argocd"
+    echo "  - View ArgoCD logs: kubectl logs -n argocd deployment/argocd-server"
+    echo "  - Restart ArgoCD: kubectl rollout restart deployment argocd-server -n argocd"
+    echo ""
+    echo "⚠️  Security Notes:"
+    echo "  - ArgoCD is configured for HTTP (insecure) access for simplicity"
+    echo "  - For production, configure HTTPS with proper certificates"
+    echo "  - Change the default admin password immediately"
+    echo "  - Consider restricting firewall access to specific IP ranges"
+    echo ""
+
+    # Save credentials to file for future reference
+    cat > argocd-credentials.txt << EOF
+ArgoCD Access Information
+========================
+URL: http://${PUBLIC_IP}:${ARGOCD_PORT}
+Username: admin
+Password: ${ARGOCD_PASSWORD}
+Created: $(date)
+EOF
+
+    print_success "Credentials saved to argocd-credentials.txt"
+    echo "🎉 You can now access ArgoCD at: http://${PUBLIC_IP}:${ARGOCD_PORT}"
+}
+
+# Main script logic
+case $ACTION in
+    "install")
+        # Check if already installed
+        if check_argocd_installation; then
+            print_error "ArgoCD appears to be already installed!"
+            echo ""
+            echo "Options:"
+            echo "  1. Run '$0 uninstall' to remove existing installation"
+            echo "  2. Run '$0 reinstall' to uninstall and reinstall"
+            echo "  3. Access existing installation (credentials may be in argocd-credentials.txt)"
+            exit 1
+        fi
+        install_argocd
+        ;;
+    "uninstall")
+        if ! check_argocd_installation; then
+            print_error "ArgoCD doesn't appear to be installed"
+            exit 1
+        fi
+        uninstall_argocd
+        ;;
+    "reinstall")
+        print_header "♻️  Reinstalling ArgoCD"
+        if check_argocd_installation; then
+            uninstall_argocd
+            echo ""
+            print_status "Waiting 10 seconds before reinstalling..."
+            sleep 10
+        fi
+        install_argocd
+        ;;
+    "-h"|"--help"|"help")
+        show_usage
+        exit 0
+        ;;
+    *)
+        print_error "Invalid action: $ACTION"
+        show_usage
+        exit 1
+        ;;
+esac
