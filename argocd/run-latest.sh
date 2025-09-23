@@ -7,7 +7,7 @@ set -Eeuo pipefail
 
 URL="https://raw.githubusercontent.com/divyamohan1993/devops-shell-scripts/refs/heads/main/argocd/autoconfig.sh"
 
-cd ~/ && mkdir argocd && cd argocd
+cd ~/
 
 # cache-bust via timestamp param + no-cache headers
 wget -O autoconfig.sh --header="Cache-Control: no-cache" "${URL}?nocache=$(date +%s)"
